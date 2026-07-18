@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+artifacts/
+BenchmarkDotNet.Artifacts/
+data/
+backups/
+.DS_Store

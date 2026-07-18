@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Vector, full-text, metadata, and hybrid indexes for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+</Project>

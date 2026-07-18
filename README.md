@@ -1,0 +1,97 @@
+# SlimVector
+
+SlimVector is a .NET 10 hybrid vector database with durable single-node operation, independent DotNext Raft groups for clustered operation, adaptive write batching, and geographic disaster-recovery replication. It combines exact SIMD or HNSW vector search, BM25 text search, typed metadata filters, and weighted reciprocal-rank fusion.
+
+## Quick start
+
+Requirements: .NET SDK 10.0.300 or newer in the 10.0 feature band.
+
+```bash
+ASPNETCORE_URLS=http://localhost:8080 dotnet run --project src/SlimVector.Api
+```
+
+Create a collection and add two documents:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/collections \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"articles","dimension":3,"metric":"cosine","vectorIndex":{"kind":"hnsw","hnswM":16,"hnswEfConstruction":200,"hnswEfSearch":64}}'
+
+curl -X POST http://localhost:8080/api/v1/collections/articles/documents/add \
+  -H 'Content-Type: application/json' \
+  -d '{"atomic":true,"documents":[{"id":"dotnet","text":"A distributed vector database in .NET","vector":[1,0,0],"metadata":{"year":2026,"tags":["dotnet","vector"]}},{"id":"other","text":"An unrelated document","vector":[0,1,0],"metadata":{"year":2024}}]}'
+```
+
+Run a hybrid query. Hybrid scores use weighted rank fusion; vector distance and BM25 scores are never added directly.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/collections/articles/documents/query \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"hybrid","text":"vector database","vector":[1,0,0],"limit":5,"filter":{"operator":"greaterThanOrEqual","field":"year","value":2025},"include":["text","metadata","scores"]}'
+```
+
+OpenAPI is at `/openapi/v1.json`; liveness, readiness, and Prometheus text metrics are at `/health/live`, `/health/ready`, and `/metrics`.
+
+## Docker
+
+```bash
+docker compose -f compose.single-node.yml up --build
+docker compose -f compose.cluster.yml up --build
+docker compose -f compose.geo.yml up --build
+```
+
+The cluster publishes nodes on ports 8081–8083. The simulated geographic primary and read-only secondary are published on 8090 and 8091.
+
+## Typed .NET client
+
+```csharp
+using SlimVector.Client;
+
+HttpClient http = new() { BaseAddress = new Uri("http://localhost:8080") };
+SlimVectorClient client = new(http);
+await client.CreateCollectionAsync(new CreateCollectionRequest { Name = "articles", Dimension = 3 });
+await client.AddDocumentsAsync("articles",
+[
+    new SlimVectorDocument { Id = "one", Text = "vector database", Vector = [1, 0, 0] },
+]);
+SlimVectorQueryResult result = await client.QueryAsync("articles", new SlimVectorQuery
+{
+    Mode = SlimVector.Domain.SearchMode.Hybrid,
+    Text = "vector database",
+    Vector = [1, 0, 0],
+    Limit = 5,
+});
+```
+
+## Quality gates
+
+```bash
+dotnet format SlimVector.slnx --verify-no-changes
+dotnet build SlimVector.slnx -c Release
+dotnet test SlimVector.slnx -c Release
+dotnet publish src/SlimVector.Api/SlimVector.Api.csproj -c Release -r linux-x64 --self-contained true
+```
+
+The API project publishes with Native AOT and `TrimMode=full`. The narrowly scoped MemoryPack aggregate-warning policy is explained in [ADR 0001](docs/adr/0001-memorypack-native-aot-warnings.md).
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [HTTP API](docs/api.md) and [configuration](docs/configuration.md)
+- [Storage](docs/storage.md) and [indexes](docs/indexes.md)
+- [Single-node](docs/single-node.md) and [three-node cluster](docs/cluster.md)
+- [Geographic replication](docs/geo-replication.md)
+- [Backup and restore](docs/backup-restore.md)
+- [Observability](docs/observability.md) and [troubleshooting](docs/troubleshooting.md)
+- [Testing, Native AOT smoke, and benchmarks](docs/testing.md)
+
+## Projects
+
+- `SlimVector.Domain`: immutable domain model and validation
+- `SlimVector.Storage`: immutable segments, manifests, checksums, tombstones, compaction
+- `SlimVector.Indexing`: Flat SIMD, HNSW, BM25, metadata, rank fusion
+- `SlimVector.Raft`: deterministic commands, catalog/data Raft groups, snapshots
+- `SlimVector.Replication`: durable inter-zone outbox and signed receiver
+- `SlimVector.Application`: lazy collection lifecycle, batching, backups, use cases
+- `SlimVector.Api`: source-generated Minimal API, OpenAPI, health, metrics
+- `SlimVector.Client`: source-generated typed HTTP client

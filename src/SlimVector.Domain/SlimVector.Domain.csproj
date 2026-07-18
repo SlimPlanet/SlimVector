@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Core domain model and contracts for SlimVector.</Description>
+  </PropertyGroup>
+</Project>

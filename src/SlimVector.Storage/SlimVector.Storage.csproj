@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Durable segmented storage for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+  </ItemGroup>
+</Project>

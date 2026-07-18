@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Raft catalog and data-group coordination for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <ProjectReference Include="../SlimVector.Storage/SlimVector.Storage.csproj" />
+    <PackageReference Include="DotNext.Net.Cluster" />
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Typed AOT-compatible .NET client for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,227 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using SlimVector.Api.Contracts;
+using SlimVector.Application;
+using SlimVector.Application.Configuration;
+using SlimVector.Domain;
+
+namespace SlimVector.Api;
+
+internal static class ApiEndpoints
+{
+    internal const string RequestTimeoutPolicyName = "SlimVector.Api";
+
+    public static IEndpointRouteBuilder MapSlimVectorApi(this IEndpointRouteBuilder endpoints)
+    {
+        ApiOptions apiOptions = endpoints.ServiceProvider.GetRequiredService<IOptions<ApiOptions>>().Value;
+        RouteGroupBuilder api = endpoints.MapGroup(apiOptions.RoutePrefix);
+        api.WithRequestTimeout(RequestTimeoutPolicyName);
+
+        RouteGroupBuilder collections = api.MapGroup("/collections").WithTags("Collections");
+        collections.MapPost("/", CreateCollectionAsync).WithName("CreateCollection").Produces<CollectionResponse>(StatusCodes.Status201Created);
+        collections.MapPost("/get-or-create", GetOrCreateCollectionAsync).WithName("GetOrCreateCollection").Produces<CollectionResponse>();
+        collections.MapGet("/", ListCollectionsAsync).WithName("ListCollections").Produces<CollectionListResponse>();
+        collections.MapGet("/{name}", GetCollectionAsync).WithName("GetCollection").Produces<CollectionResponse>();
+        collections.MapPatch("/{name}", UpdateCollectionAsync).WithName("UpdateCollection").Produces<CollectionResponse>();
+        collections.MapDelete("/{name}", DeleteCollectionAsync).WithName("DeleteCollection").Produces(StatusCodes.Status204NoContent);
+
+        RouteGroupBuilder documents = collections.MapGroup("/{name}/documents").WithTags("Documents");
+        documents.MapPost("/add", AddDocumentsAsync).WithName("AddDocuments").Produces<BatchMutationResponse>();
+        documents.MapPost("/upsert", UpsertDocumentsAsync).WithName("UpsertDocuments").Produces<BatchMutationResponse>();
+        documents.MapPatch("/", UpdateDocumentsAsync).WithName("UpdateDocuments").Produces<BatchMutationResponse>();
+        documents.MapGet("/", GetDocumentsAsync).WithName("GetDocuments").Produces<DocumentListResponse>();
+        documents.MapPost("/delete", DeleteDocumentsAsync).WithName("DeleteDocuments").Produces<BatchMutationResponse>();
+        documents.MapGet("/count", CountDocumentsAsync).WithName("CountDocuments").Produces<CountResponse>();
+        documents.MapPost("/query", QueryAsync).WithName("QueryDocuments").Produces<QueryResponse>();
+        return endpoints;
+    }
+
+    private static async Task<IResult> CreateCollectionAsync(
+        CreateCollectionRequest request,
+        ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
+        CancellationToken cancellationToken)
+    {
+        CollectionDefinition definition = await database.CreateCollectionAsync(
+            request.Name,
+            request.Dimension,
+            request.Metric ?? DistanceMetric.Cosine,
+            request.VectorIndex,
+            cancellationToken).ConfigureAwait(false);
+        return TypedResults.Created(
+            $"{options.Value.RoutePrefix}/collections/{Uri.EscapeDataString(definition.Name)}",
+            ContractMapper.ToResponse(definition));
+    }
+
+    private static async Task<IResult> GetOrCreateCollectionAsync(
+        CreateCollectionRequest request,
+        ISlimVectorDatabase database,
+        CancellationToken cancellationToken)
+    {
+        CollectionDefinition definition = await database.GetOrCreateCollectionAsync(
+            request.Name,
+            request.Dimension,
+            request.Metric ?? DistanceMetric.Cosine,
+            request.VectorIndex,
+            cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+    }
+
+    private static async Task<IResult> ListCollectionsAsync(ISlimVectorDatabase database, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<CollectionDefinition> definitions = await database.ListCollectionsAsync(cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(new CollectionListResponse { Collections = definitions.Select(ContractMapper.ToResponse).ToArray() });
+    }
+
+    private static async Task<IResult> GetCollectionAsync(string name, ISlimVectorDatabase database, CancellationToken cancellationToken)
+    {
+        CollectionDefinition definition = await database.GetCollectionAsync(name, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+    }
+
+    private static async Task<IResult> UpdateCollectionAsync(
+        string name,
+        UpdateCollectionRequest request,
+        ISlimVectorDatabase database,
+        CancellationToken cancellationToken)
+    {
+        CollectionDefinition definition = await database.UpdateCollectionAsync(
+            name,
+            request.Name,
+            request.VectorIndex,
+            cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+    }
+
+    private static async Task<IResult> DeleteCollectionAsync(string name, ISlimVectorDatabase database, CancellationToken cancellationToken)
+    {
+        await database.DeleteCollectionAsync(name, cancellationToken).ConfigureAwait(false);
+        return TypedResults.NoContent();
+    }
+
+    private static Task<IResult> AddDocumentsAsync(
+        string name,
+        DocumentBatchRequest request,
+        ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
+        HttpContext httpContext,
+        CancellationToken cancellationToken) =>
+        MutateDocumentsAsync(name, request, DocumentMutationKind.Add, database, options.Value, httpContext, cancellationToken);
+
+    private static Task<IResult> UpsertDocumentsAsync(
+        string name,
+        DocumentBatchRequest request,
+        ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
+        HttpContext httpContext,
+        CancellationToken cancellationToken) =>
+        MutateDocumentsAsync(name, request, DocumentMutationKind.Upsert, database, options.Value, httpContext, cancellationToken);
+
+    private static async Task<IResult> UpdateDocumentsAsync(
+        string name,
+        DocumentUpdateBatchRequest request,
+        ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ValidateBatch(request.Documents.Length, options.Value.MaximumBatchSize);
+        DocumentMutation[] mutations = request.Documents.Select(static document => new DocumentMutation
+        {
+            Kind = DocumentMutationKind.Update,
+            Id = document.Id,
+            Patch = ContractMapper.ToPatch(document),
+        }).ToArray();
+        BatchMutationResult result = await database
+            .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(result));
+    }
+
+    private static async Task<IResult> GetDocumentsAsync(
+        string name,
+        [FromQuery] string[]? ids,
+        [FromQuery] int offset,
+        [FromQuery] int limit,
+        ISlimVectorDatabase database,
+        CancellationToken cancellationToken)
+    {
+        int effectiveLimit = limit == 0 ? 100 : limit;
+        IReadOnlyList<DocumentRecord> documents = await database
+            .GetDocumentsAsync(name, ids, offset, effectiveLimit, cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(new DocumentListResponse { Documents = documents.Select(ContractMapper.ToResponse).ToArray() });
+    }
+
+    private static async Task<IResult> DeleteDocumentsAsync(
+        string name,
+        DocumentDeleteRequest request,
+        ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ValidateBatch(request.Ids.Length, options.Value.MaximumBatchSize);
+        DocumentMutation[] mutations = request.Ids.Select(static id => new DocumentMutation
+        {
+            Kind = DocumentMutationKind.Delete,
+            Id = id,
+        }).ToArray();
+        BatchMutationResult result = await database
+            .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(result));
+    }
+
+    private static async Task<IResult> CountDocumentsAsync(
+        string name,
+        ISlimVectorDatabase database,
+        CancellationToken cancellationToken)
+    {
+        long count = await database.CountDocumentsAsync(name, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(new CountResponse { Count = count });
+    }
+
+    private static async Task<IResult> QueryAsync(
+        string name,
+        QueryRequest request,
+        ISlimVectorDatabase database,
+        CancellationToken cancellationToken)
+    {
+        SearchResponse response = await database.SearchAsync(name, ContractMapper.ToSearchRequest(request), cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(response));
+    }
+
+    private static async Task<IResult> MutateDocumentsAsync(
+        string name,
+        DocumentBatchRequest request,
+        DocumentMutationKind kind,
+        ISlimVectorDatabase database,
+        ApiOptions options,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ValidateBatch(request.Documents.Length, options.MaximumBatchSize);
+        DocumentMutation[] mutations = request.Documents.Select(document => new DocumentMutation
+        {
+            Kind = kind,
+            Id = document.Id,
+            Document = ContractMapper.ToDocument(document),
+        }).ToArray();
+        BatchMutationResult result = await database
+            .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(ContractMapper.ToResponse(result));
+    }
+
+    private static void ValidateBatch(int count, int maximum)
+    {
+        if (count is < 1 || count > maximum)
+        {
+            throw new DomainException("invalid_batch_size", $"Batch size must be between 1 and {maximum}.");
+        }
+    }
+
+    private static string GetClientId(HttpContext httpContext) =>
+        httpContext.User.Identity?.Name ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous";
+}

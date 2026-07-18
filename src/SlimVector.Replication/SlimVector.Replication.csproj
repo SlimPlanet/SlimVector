@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Geographic replication for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <ProjectReference Include="../SlimVector.Raft/SlimVector.Raft.csproj" />
+    <ProjectReference Include="../SlimVector.Storage/SlimVector.Storage.csproj" />
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+</Project>

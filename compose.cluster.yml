@@ -1,0 +1,74 @@
+x-cluster-environment: &cluster-environment
+  Storage__Path: /data
+  Storage__FlushToDisk: "true"
+  Raft__Mode: Cluster
+  Raft__DataGroupCount: "2"
+  Raft__Members__0: http://172.28.0.11:3262
+  Raft__Members__1: http://172.28.0.12:3262
+  Raft__Members__2: http://172.28.0.13:3262
+  Raft__MemberApiEndpoints__0: http://localhost:8081
+  Raft__MemberApiEndpoints__1: http://localhost:8082
+  Raft__MemberApiEndpoints__2: http://localhost:8083
+
+services:
+  node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    volumes:
+      - node-1-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.11
+    environment:
+      <<: *cluster-environment
+      Raft__NodeId: node-1
+      Raft__PublicEndpoint: http://172.28.0.11:3262
+      Raft__PublicApiEndpoint: http://localhost:8081
+
+  node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+    environment:
+      <<: *cluster-environment
+      Raft__NodeId: node-2
+      Raft__PublicEndpoint: http://172.28.0.12:3262
+      Raft__PublicApiEndpoint: http://localhost:8082
+    volumes:
+      - node-2-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.12
+
+  node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8080"
+    environment:
+      <<: *cluster-environment
+      Raft__NodeId: node-3
+      Raft__PublicEndpoint: http://172.28.0.13:3262
+      Raft__PublicApiEndpoint: http://localhost:8083
+    volumes:
+      - node-3-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.13
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+
+networks:
+  slimvector-cluster:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

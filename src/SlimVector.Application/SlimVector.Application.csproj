@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Application services and orchestration for SlimVector.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <ProjectReference Include="../SlimVector.Indexing/SlimVector.Indexing.csproj" />
+    <ProjectReference Include="../SlimVector.Raft/SlimVector.Raft.csproj" />
+    <ProjectReference Include="../SlimVector.Replication/SlimVector.Replication.csproj" />
+    <ProjectReference Include="../SlimVector.Storage/SlimVector.Storage.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+</Project>

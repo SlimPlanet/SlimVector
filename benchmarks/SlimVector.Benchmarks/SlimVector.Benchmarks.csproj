@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsBenchmarkProject>true</IsBenchmarkProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/SlimVector.Application/SlimVector.Application.csproj" />
+    <ProjectReference Include="../../src/SlimVector.Indexing/SlimVector.Indexing.csproj" />
+    <ProjectReference Include="../../src/SlimVector.Raft/SlimVector.Raft.csproj" />
+    <ProjectReference Include="../../src/SlimVector.Storage/SlimVector.Storage.csproj" />
+    <PackageReference Include="BenchmarkDotNet" />
+  </ItemGroup>
+</Project>
