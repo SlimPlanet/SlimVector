@@ -32,6 +32,25 @@ curl -X POST http://localhost:8080/api/v1/collections/articles/documents/query \
 
 OpenAPI is at `/openapi/v1.json`; liveness, readiness, and Prometheus text metrics are at `/health/live`, `/health/ready`, and `/metrics`.
 
+## Document ingestion Studio
+
+Run the all-in-one local Studio when you want to ingest and explore documents without creating vectors yourself:
+
+```bash
+dotnet run --project src/SlimVector.Studio
+```
+
+Open `http://localhost:5187`. The Studio starts an embedded single-node SlimVector database, creates a 384-dimension `documents` collection on first launch, and offers:
+
+- drag-and-drop PDF, DOCX, PPTX, text, and Markdown extraction;
+- recursive, paragraph, or sentence chunking with configurable target, maximum, and overlap;
+- fully local multilingual ONNX embeddings with automatic ARM64/AVX2 model selection;
+- vector, BM25, hybrid, and metadata-only search with consistency and returned-field controls;
+- collection CRUD and HNSW settings, document inspection and manual batch mutations;
+- Raft/write/search telemetry plus backup, verification, and restore workflows.
+
+The first vector operation downloads the pinned Apache-2.0 Hugging Face model into the per-user application-data directory. It then works offline. Documents are never sent to a remote inference API. See [document ingestion](docs/document-ingestion.md) and the [Studio guide](docs/studio.md).
+
 ## Docker
 
 ```bash
@@ -83,6 +102,8 @@ The API project publishes with Native AOT and `TrimMode=full`. The narrowly scop
 - [Geographic replication](docs/geo-replication.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Observability](docs/observability.md) and [troubleshooting](docs/troubleshooting.md)
+- [Document extraction, chunking, and local embeddings](docs/document-ingestion.md)
+- [SlimVector Studio](docs/studio.md)
 - [Testing, Native AOT smoke, and benchmarks](docs/testing.md)
 
 ## Projects
@@ -95,3 +116,5 @@ The API project publishes with Native AOT and `TrimMode=full`. The narrowly scop
 - `SlimVector.Application`: lazy collection lifecycle, batching, backups, use cases
 - `SlimVector.Api`: source-generated Minimal API, OpenAPI, health, metrics
 - `SlimVector.Client`: source-generated typed HTTP client
+- `SlimVector.DocIngestor`: PDF/DOCX/PPTX extraction, structured chunking, and local ONNX embeddings
+- `SlimVector.Studio`: all-in-one web interface that starts SlimVector automatically

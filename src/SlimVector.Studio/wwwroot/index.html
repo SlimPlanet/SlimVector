@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="SlimVector Studio — ingestion documentaire et exploration vectorielle locale.">
+  <title>SlimVector Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.2-6 4 12 2.3-6H21"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 1.5 5.2L19 9l-5.5 1.8L12 16l-1.5-5.2L5 9l5.5-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.2 9A7 7 0 0 0 6.4 6.4L4 9m16 6-2.4 2.6A7 7 0 0 1 5.8 15"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#overview" aria-label="SlimVector Studio">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>SlimVector</strong><small>Studio</small></span>
+      </a>
+
+      <nav class="main-nav" aria-label="Navigation principale">
+        <button class="nav-item active" data-view="overview"><svg><use href="#i-grid"/></svg><span>Vue d’ensemble</span></button>
+        <button class="nav-item" data-view="ingest"><svg><use href="#i-upload"/></svg><span>Ingestion</span><span class="nav-badge">PDF+</span></button>
+        <button class="nav-item" data-view="search"><svg><use href="#i-search"/></svg><span>Recherche</span></button>
+        <button class="nav-item" data-view="documents"><svg><use href="#i-doc"/></svg><span>Documents</span></button>
+        <button class="nav-item" data-view="collections"><svg><use href="#i-layers"/></svg><span>Collections</span></button>
+        <button class="nav-item" data-view="operations"><svg><use href="#i-pulse"/></svg><span>Exploitation</span></button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="runtime-mini">
+          <span class="status-dot" id="sidebar-db-dot"></span>
+          <div><strong id="sidebar-db-status">Démarrage…</strong><small id="sidebar-db-detail">SlimVector local</small></div>
+        </div>
+        <div class="sidebar-foot"><span>Local-first · sans cloud</span><button id="theme-toggle" class="icon-btn" aria-label="Changer de thème">◐</button></div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button class="mobile-menu icon-btn" id="mobile-menu" aria-label="Ouvrir le menu">☰</button>
+        <div class="collection-switcher">
+          <label for="global-collection">Collection active</label>
+          <div class="select-shell"><svg><use href="#i-database"/></svg><select id="global-collection" aria-label="Collection active"></select><svg class="chevron"><use href="#i-chevron"/></svg></div>
+        </div>
+        <div class="topbar-actions">
+          <div class="model-pill" id="model-pill"><span class="status-dot"></span><span id="model-pill-label">Modèle local</span></div>
+          <button class="button secondary compact" id="quick-ingest"><svg><use href="#i-plus"/></svg>Ingestérer</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="view active" id="view-overview" data-title="Vue d’ensemble">
+          <div class="hero-panel">
+            <div class="hero-copy">
+              <div class="eyebrow"><svg><use href="#i-spark"/></svg> Laboratoire vectoriel local</div>
+              <h1>Vos documents,<br><span>interrogeables en quelques secondes.</span></h1>
+              <p>Extrayez PDF, Word et PowerPoint, découpez leur contenu et explorez la recherche vectorielle, textuelle ou hybride — sans quitter votre machine.</p>
+              <div class="hero-actions">
+                <button class="button primary" data-go="ingest"><svg><use href="#i-upload"/></svg>Importer un document</button>
+                <button class="button ghost" data-go="search"><svg><use href="#i-search"/></svg>Lancer une requête</button>
+              </div>
+            </div>
+            <div class="hero-visual" aria-hidden="true">
+              <div class="vector-orbit orbit-one"><span></span><span></span><span></span></div>
+              <div class="vector-orbit orbit-two"><span></span><span></span></div>
+              <div class="vector-core"><span>384</span><small>dimensions</small></div>
+              <div class="format-chip chip-pdf">PDF</div><div class="format-chip chip-docx">DOCX</div><div class="format-chip chip-pptx">PPTX</div>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-layers"/></svg></div><div><span>Collections</span><strong id="stat-collections">—</strong><small>espaces vectoriels</small></div></article>
+            <article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-doc"/></svg></div><div><span>Chunks indexés</span><strong id="stat-documents">—</strong><small id="stat-active-count">collection active</small></div></article>
+            <article class="stat-card"><div class="stat-icon coral"><svg><use href="#i-spark"/></svg></div><div><span>Modèle</span><strong id="stat-model">384d</strong><small id="stat-model-status">vérification…</small></div></article>
+            <article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-pulse"/></svg></div><div><span>Requêtes</span><strong id="stat-searches">—</strong><small id="stat-latency">moteur prêt</small></div></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel span-2">
+              <div class="panel-header"><div><span class="panel-kicker">Espace de travail</span><h2>Collections</h2></div><button class="text-button" data-go="collections">Tout gérer →</button></div>
+              <div id="overview-collections" class="collection-list skeleton-host"></div>
+            </article>
+            <article class="panel model-card">
+              <div class="panel-header"><div><span class="panel-kicker">Inférence locale</span><h2>Modèle d’embedding</h2></div><span class="status-dot" id="model-card-dot"></span></div>
+              <div class="model-name"><svg><use href="#i-spark"/></svg><div><strong>Multilingual MiniLM L12</strong><small>Hugging Face · Apache-2.0</small></div></div>
+              <dl class="compact-dl"><div><dt>Dimensions</dt><dd>384</dd></div><div><dt>Langues</dt><dd>50</dd></div><div><dt>Backend</dt><dd>ONNX Runtime</dd></div><div><dt>Variante</dt><dd id="model-variant">—</dd></div></dl>
+              <button class="button secondary full" id="prepare-model"><svg><use href="#i-refresh"/></svg><span id="prepare-model-label">Préparer le modèle</span></button>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-ingest">
+          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-upload"/></svg> Pipeline documentaire</span><h1>Extraire, découper, vectoriser</h1><p>Déposez un ou plusieurs fichiers. Le pipeline conserve leurs pages, diapositives et titres dans les métadonnées.</p></div></div>
+          <form id="ingest-form" class="ingest-layout">
+            <div class="ingest-main">
+              <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Déposer ou sélectionner des documents">
+                <input type="file" id="file-input" name="files" multiple accept=".pdf,.docx,.pptx,.txt,.md" hidden>
+                <div class="drop-illustration"><svg><use href="#i-upload"/></svg><span class="drop-ring"></span></div>
+                <h2>Déposez vos documents ici</h2>
+                <p>ou <span>parcourez vos fichiers</span></p>
+                <small>PDF · DOCX · PPTX · TXT · MD — 128 Mo maximum par fichier</small>
+              </div>
+              <div id="file-queue" class="file-queue"></div>
+              <div id="ingest-result" class="result-zone empty-state"><svg><use href="#i-spark"/></svg><h3>Les chunks apparaîtront ici</h3><p>Prévisualisez le découpage ou stockez directement les vecteurs dans SlimVector.</p></div>
+            </div>
+            <aside class="config-panel">
+              <div class="config-title"><div><span class="panel-kicker">Configuration</span><h2>Ingestion</h2></div><svg><use href="#i-settings"/></svg></div>
+              <label class="field"><span>Collection cible</span><select id="ingest-collection" name="collection"></select></label>
+              <label class="field"><span>Stratégie de chunking</span><select name="strategy"><option value="recursive">Récursive</option><option value="paragraph">Paragraphes</option><option value="sentence">Phrases</option></select><small>La stratégie récursive préserve au mieux la structure.</small></label>
+              <div class="field-grid three">
+                <label class="field"><span>Cible</span><input type="number" name="targetTokens" value="90" min="8" max="120"></label>
+                <label class="field"><span>Maximum</span><input type="number" name="maximumTokens" value="120" min="8" max="126"></label>
+                <label class="field"><span>Overlap</span><input type="number" name="overlapTokens" value="18" min="0" max="89"></label>
+              </div>
+              <label class="field"><span>Métadonnées personnalisées</span><textarea name="metadata" rows="5" spellcheck="false" placeholder='{"équipe":"R&D","confidentiel":false}'></textarea></label>
+              <div class="toggle-row"><div><strong>Remplacer la version précédente</strong><small>Même nom de fichier dans la collection</small></div><label class="switch"><input type="checkbox" name="replaceExisting" checked><span></span></label></div>
+              <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Chaque lot réussit ou échoue ensemble</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>
+              <div class="toggle-row"><div><strong>Prévisualisation seule</strong><small>Ne rien écrire dans SlimVector</small></div><label class="switch"><input type="checkbox" name="previewOnly"><span></span></label></div>
+              <button type="submit" class="button primary full large"><svg><use href="#i-spark"/></svg>Lancer le pipeline</button>
+              <p class="privacy-note"><span>●</span> Traitement 100 % local. Aucun document n’est envoyé à un service tiers.</p>
+            </aside>
+          </form>
+        </section>
+
+        <section class="view" id="view-search">
+          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-search"/></svg> Query lab</span><h1>Interroger la collection</h1><p>Comparez les moteurs vectoriel, BM25, hybride et métadonnées avec la même collection.</p></div><div class="heading-metric"><span id="search-collection-count">—</span><small>chunks disponibles</small></div></div>
+          <div class="search-layout">
+            <form id="search-form" class="panel query-builder">
+              <div class="mode-tabs" role="radiogroup" aria-label="Mode de recherche">
+                <button type="button" data-mode="hybrid" class="active"><span class="mode-dot fusion"></span>Hybride</button>
+                <button type="button" data-mode="vector"><span class="mode-dot vector"></span>Vectoriel</button>
+                <button type="button" data-mode="text"><span class="mode-dot text"></span>BM25</button>
+                <button type="button" data-mode="metadata"><span class="mode-dot meta"></span>Métadonnées</button>
+              </div>
+              <input type="hidden" name="mode" value="hybrid">
+              <label class="query-box"><span>Votre requête</span><textarea name="query" rows="4" placeholder="Ex. Comment fonctionne la réplication géographique ?"></textarea><div class="query-hint"><span><kbd>⌘</kbd><kbd>↵</kbd> pour lancer</span><span id="query-model-hint">Vectorisation locale 384d</span></div></label>
+              <div class="query-options">
+                <label class="field"><span>Top K</span><input type="number" name="limit" value="10" min="1" max="1000"></label>
+                <label class="field"><span>Cohérence</span><select name="consistency"><option value="leader">Leader</option><option value="linearizable">Linéarisable</option><option value="stale">Stale / rapide</option></select></label>
+                <label class="field weight-field"><span>Poids vecteur <output id="vector-weight-output">50%</output></span><input type="range" name="vectorWeight" min="0" max="100" value="50"></label>
+                <label class="field weight-field"><span>Poids texte <output id="text-weight-output">50%</output></span><input type="range" name="textWeight" min="0" max="100" value="50"></label>
+              </div>
+              <div class="filter-builder">
+                <div class="filter-head"><label class="check"><input type="checkbox" id="filter-enabled"><span><svg><use href="#i-check"/></svg></span>Filtrer les métadonnées</label><small>Index secondaire persistant</small></div>
+                <div class="filter-fields" id="filter-fields" hidden>
+                  <label class="field"><span>Champ</span><input name="filterField" placeholder="source_file"></label>
+                  <label class="field"><span>Opérateur</span><select name="filterOperator"><option value="equal">Égal</option><option value="notEqual">Différent</option><option value="greaterThan">Supérieur</option><option value="greaterThanOrEqual">Supérieur ou égal</option><option value="lessThan">Inférieur</option><option value="lessThanOrEqual">Inférieur ou égal</option><option value="in">Dans la liste</option><option value="exists">Existe</option></select></label>
+                  <label class="field"><span>Valeur JSON</span><input name="filterValue" placeholder='"guide.pdf"'></label>
+                </div>
+              </div>
+              <details class="include-details"><summary>Champs retournés <span id="include-summary">texte, métadonnées, scores</span></summary><div class="check-grid"><label class="check"><input type="checkbox" name="includeText" checked><span><svg><use href="#i-check"/></svg></span>Texte</label><label class="check"><input type="checkbox" name="includeMetadata" checked><span><svg><use href="#i-check"/></svg></span>Métadonnées</label><label class="check"><input type="checkbox" name="includeScores" checked><span><svg><use href="#i-check"/></svg></span>Scores</label><label class="check"><input type="checkbox" name="includeVector"><span><svg><use href="#i-check"/></svg></span>Vecteur complet</label></div></details>
+              <button type="submit" class="button primary full large"><svg><use href="#i-search"/></svg>Rechercher</button>
+            </form>
+            <div class="search-results" id="search-results"><div class="empty-state tall"><div class="radar"><span></span><span></span><span></span><i></i></div><h2>Prêt à explorer</h2><p>Saisissez une question puis comparez les rangs vectoriels et textuels.</p></div></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-documents">
+          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-doc"/></svg> Explorateur</span><h1>Documents & chunks</h1><p>Inspectez le texte, les métadonnées, les versions et les dimensions stockées.</p></div><button class="button primary" id="new-document"><svg><use href="#i-plus"/></svg>Mutation manuelle</button></div>
+          <div class="panel table-panel">
+            <div class="table-toolbar"><div><strong id="documents-total">— éléments</strong><span id="documents-range">collection active</span></div><div class="toolbar-actions"><label class="check compact-check"><input type="checkbox" id="include-vectors"><span><svg><use href="#i-check"/></svg></span>Charger les vecteurs</label><button class="button danger compact" id="delete-selected" disabled><svg><use href="#i-trash"/></svg>Supprimer</button><button class="icon-btn bordered" id="refresh-documents" aria-label="Actualiser"><svg><use href="#i-refresh"/></svg></button></div></div>
+            <div class="document-table-wrap"><table class="data-table"><thead><tr><th class="checkbox-cell"><input type="checkbox" id="select-all-documents" aria-label="Tout sélectionner"></th><th>Identifiant / texte</th><th>Source</th><th>Vecteur</th><th>Version</th><th>Mise à jour</th></tr></thead><tbody id="documents-body"></tbody></table></div>
+            <div class="pagination"><button class="button ghost compact" id="documents-prev">← Précédent</button><span id="documents-page">Page 1</span><button class="button ghost compact" id="documents-next">Suivant →</button></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-collections">
+          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-layers"/></svg> Catalog</span><h1>Gérer les collections</h1><p>Choisissez la métrique, la dimension et le type d’index vectoriel de chaque espace.</p></div></div>
+          <div class="collections-layout">
+            <form id="create-collection-form" class="panel create-card">
+              <div class="config-title"><div><span class="panel-kicker">Nouvel espace</span><h2>Créer une collection</h2></div><div class="stat-icon violet"><svg><use href="#i-plus"/></svg></div></div>
+              <label class="field"><span>Nom</span><input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" placeholder="knowledge-base"></label>
+              <div class="field-grid two"><label class="field"><span>Dimension</span><input name="dimension" type="number" value="384" min="1" max="65536"></label><label class="field"><span>Métrique</span><select name="metric"><option value="cosine">Cosine</option><option value="dotProduct">Dot product</option><option value="euclidean">Euclidienne</option></select></label></div>
+              <label class="field"><span>Index vectoriel</span><select name="indexKind"><option value="auto">Auto</option><option value="flat">Flat exact</option><option value="hnsw">HNSW</option></select></label>
+              <details class="advanced"><summary>Paramètres HNSW <svg><use href="#i-chevron"/></svg></summary><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number" value="16" min="2" max="128"></label><label class="field"><span>ef build</span><input name="hnswEfConstruction" type="number" value="200" min="16" max="4096"></label><label class="field"><span>ef search</span><input name="hnswEfSearch" type="number" value="64" min="1" max="4096"></label></div></details>
+              <button type="submit" class="button primary full"><svg><use href="#i-plus"/></svg>Créer la collection</button>
+              <p class="form-note">Utilisez 384 dimensions pour l’ingestion et la recherche vectorisée locales.</p>
+            </form>
+            <div><div class="section-title"><div><span class="panel-kicker">Catalogue local</span><h2>Collections existantes</h2></div><span class="count-badge" id="collections-count-badge">0</span></div><div id="collections-grid" class="collections-grid"></div></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-operations">
+          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-pulse"/></svg> Observabilité</span><h1>Exploitation & sauvegardes</h1><p>Suivez le consensus, les files adaptatives, les index et les opérations de restauration.</p></div><button class="button secondary" id="refresh-runtime"><svg><use href="#i-refresh"/></svg>Actualiser</button></div>
+          <div class="runtime-banner" id="runtime-banner"><span class="status-dot"></span><div><strong>SlimVector démarre…</strong><small>Vérification du consensus local</small></div></div>
+          <div class="stats-grid ops-stats"><article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-database"/></svg></div><div><span>Mémoire managée</span><strong id="op-memory">—</strong><small>GC heap courant</small></div></article><article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-layers"/></svg></div><div><span>Collections ouvertes</span><strong id="op-open">—</strong><small>runtimes chargés</small></div></article><article class="stat-card"><div class="stat-icon coral"><svg><use href="#i-upload"/></svg></div><div><span>Écritures</span><strong id="op-writes">—</strong><small id="op-queue">file —</small></div></article><article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-search"/></svg></div><div><span>Recherches</span><strong id="op-searches">—</strong><small id="op-failures">0 échec</small></div></article></div>
+          <div class="ops-grid"><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Consensus</span><h2>Groupes Raft</h2></div><span class="count-badge" id="raft-mode">single node</span></div><div id="raft-groups" class="raft-list"></div></article><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Backpressure</span><h2>Écriture adaptative</h2></div></div><div id="write-metrics" class="metric-bars"></div></article></div>
+          <article class="panel backup-panel"><div class="panel-header"><div><span class="panel-kicker">Protection des données</span><h2>Sauvegardes</h2></div><button class="button primary compact" id="create-backup"><svg><use href="#i-plus"/></svg>Créer maintenant</button></div><div class="backup-note"><svg><use href="#i-database"/></svg><p>Snapshots logiques incrémentaux, dédupliqués et vérifiables. La restauration complète demande une confirmation explicite.</p></div><div class="document-table-wrap"><table class="data-table"><thead><tr><th>Identifiant</th><th>Créée le</th><th>Collections</th><th>Documents</th><th>Parent</th><th>Actions</th></tr></thead><tbody id="backups-body"></tbody></table></div></article>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="document-dialog" class="modal">
+    <form method="dialog" id="manual-document-form">
+      <div class="modal-head"><div><span class="panel-kicker">API mutations</span><h2>Mutation manuelle</h2></div><button type="button" class="icon-btn" data-close-dialog><svg><use href="#i-x"/></svg></button></div>
+      <div class="modal-body">
+        <div class="field-grid two"><label class="field"><span>Opération</span><select name="kind"><option value="upsert">Upsert</option><option value="add">Add</option><option value="update">Update</option><option value="delete">Delete</option></select></label><label class="field"><span>Identifiant</span><input name="id" required placeholder="manual:001"></label></div>
+        <label class="field"><span>Texte</span><textarea name="text" rows="6" placeholder="Contenu à indexer…"></textarea></label>
+        <label class="field"><span>Métadonnées JSON</span><textarea name="metadata" rows="4" spellcheck="false" placeholder='{"type":"note","priority":2}'></textarea></label>
+        <label class="field"><span>Vecteur JSON (optionnel)</span><textarea name="vector" rows="3" spellcheck="false" placeholder="[0.12, -0.03, …]"></textarea></label>
+        <div class="toggle-row"><div><strong>Vectoriser le texte automatiquement</strong><small>Utilise le modèle ONNX local si le texte est présent</small></div><label class="switch"><input type="checkbox" name="autoVectorize" checked><span></span></label></div>
+        <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Comportement du batch SlimVector</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>
+      </div>
+      <div class="modal-actions"><button type="button" class="button ghost" data-close-dialog>Annuler</button><button type="submit" class="button primary"><svg><use href="#i-check"/></svg>Exécuter</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="collection-dialog" class="modal small-modal">
+    <form method="dialog" id="edit-collection-form">
+      <div class="modal-head"><div><span class="panel-kicker">Configuration</span><h2>Modifier la collection</h2></div><button type="button" class="icon-btn" data-close-dialog><svg><use href="#i-x"/></svg></button></div>
+      <div class="modal-body"><input type="hidden" name="currentName"><label class="field"><span>Nouveau nom</span><input name="name"></label><label class="field"><span>Index</span><select name="indexKind"><option value="auto">Auto</option><option value="flat">Flat exact</option><option value="hnsw">HNSW</option></select></label><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number"></label><label class="field"><span>ef build</span><input name="hnswEfConstruction" type="number"></label><label class="field"><span>ef search</span><input name="hnswEfSearch" type="number"></label></div></div>
+      <div class="modal-actions"><button type="button" class="button ghost" data-close-dialog>Annuler</button><button type="submit" class="button primary">Enregistrer</button></div>
+    </form>
+  </dialog>
+
+  <div class="busy-overlay" id="busy-overlay" hidden><div class="busy-card"><div class="loader-orbit"><span></span><span></span><i></i></div><h2 id="busy-title">Traitement en cours</h2><p id="busy-message">SlimVector travaille localement…</p><div class="busy-progress"><span></span></div><small id="busy-hint">Le premier lancement peut télécharger le modèle ONNX.</small></div></div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+</body>
+</html>

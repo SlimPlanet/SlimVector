@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <Description>Local web studio for document ingestion and exercising every SlimVector query mode.</Description>
+    <IsAotCompatible>false</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlimVector.Application/SlimVector.Application.csproj" />
+    <ProjectReference Include="../SlimVector.DocIngestor/SlimVector.DocIngestor.csproj" />
+  </ItemGroup>
+</Project>

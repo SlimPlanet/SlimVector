@@ -8,6 +8,8 @@
     <Project Path="src/SlimVector.Raft/SlimVector.Raft.csproj" />
     <Project Path="src/SlimVector.Replication/SlimVector.Replication.csproj" />
     <Project Path="src/SlimVector.Storage/SlimVector.Storage.csproj" />
+    <Project Path="src/SlimVector.DocIngestor/SlimVector.DocIngestor.csproj" />
+    <Project Path="src/SlimVector.Studio/SlimVector.Studio.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SlimVector.Api.Tests/SlimVector.Api.Tests.csproj" />
@@ -17,6 +19,8 @@
     <Project Path="tests/SlimVector.Raft.Tests/SlimVector.Raft.Tests.csproj" />
     <Project Path="tests/SlimVector.Replication.Tests/SlimVector.Replication.Tests.csproj" />
     <Project Path="tests/SlimVector.Storage.Tests/SlimVector.Storage.Tests.csproj" />
+    <Project Path="tests/SlimVector.DocIngestor.Tests/SlimVector.DocIngestor.Tests.csproj" />
+    <Project Path="tests/SlimVector.Studio.Tests/SlimVector.Studio.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/SlimVector.Benchmarks/SlimVector.Benchmarks.csproj" />
