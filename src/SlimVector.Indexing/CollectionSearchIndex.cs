@@ -3,7 +3,7 @@ using SlimVector.Domain;
 
 namespace SlimVector.Indexing;
 
-public sealed class CollectionSearchIndex
+public sealed class CollectionSearchIndex : IDisposable
 {
     private IVectorIndex _vector;
     private readonly Bm25Index _text;
@@ -23,12 +23,13 @@ public sealed class CollectionSearchIndex
         byte[]? persistedVectorIndex,
         double bm25K1 = 1.2,
         double bm25B = 0.75,
-        int maximumTermsPerDocument = 100_000)
+        int maximumTermsPerDocument = 100_000,
+        string? diskAnnArtifactDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        if (vectorKind is not VectorIndexKind.Flat and not VectorIndexKind.Hnsw)
+        if (vectorKind is VectorIndexKind.Auto)
         {
-            throw new ArgumentOutOfRangeException(nameof(vectorKind), vectorKind, "The effective vector-index kind must be Flat or Hnsw.");
+            throw new ArgumentOutOfRangeException(nameof(vectorKind), vectorKind, "Auto must be resolved to a concrete vector-index kind.");
         }
 
         DocumentRecord[] records = documents.ToArray();
@@ -45,6 +46,7 @@ public sealed class CollectionSearchIndex
                 bm25K1,
                 bm25B,
                 maximumTermsPerDocument,
+                diskAnnArtifactDirectory,
                 out IVectorIndex? restoredVector,
                 out Bm25Index? restoredText,
                 out MetadataIndex? restoredMetadata))
@@ -65,14 +67,19 @@ public sealed class CollectionSearchIndex
         HnswIndex? legacyHnsw = vectorKind == VectorIndexKind.Hnsw && persistedVectorIndex is not null
             ? HnswIndex.Deserialize(persistedVectorIndex, definition, signature)
             : null;
-        _vector = legacyHnsw ?? CreateVectorIndex(definition, vectorKind);
+        _vector = legacyHnsw ?? CreateVectorIndex(definition, vectorKind, diskAnnArtifactDirectory);
         _text = new Bm25Index(bm25K1, bm25B, maximumTermsPerDocument);
         _metadata = new MetadataIndex();
         WasVectorIndexRestored = legacyHnsw is not null;
 
+        if (!WasVectorIndexRestored && _vector is IBulkVectorIndex bulk)
+        {
+            bulk.Build(records.Select(static document => (document.Id, document.Vector)).ToArray());
+        }
+
         foreach (DocumentRecord document in records)
         {
-            if (!WasVectorIndexRestored)
+            if (!WasVectorIndexRestored && _vector is not IBulkVectorIndex)
             {
                 _vector.Upsert(document.Id, document.Vector);
             }
@@ -140,6 +147,10 @@ public sealed class CollectionSearchIndex
         {
             FlatVectorIndex flat => flat.Serialize(),
             HnswIndex hnsw => hnsw.Serialize(signature),
+            ScalarQuantizedVectorIndex quantized => quantized.Serialize(),
+            IvfFlatIndex ivfFlat => ivfFlat.Serialize(),
+            IvfPqIndex ivfPq => ivfPq.Serialize(),
+            DiskAnnIndex diskAnn => diskAnn.Serialize(),
             _ => throw new InvalidOperationException($"Unsupported vector index '{_vector.GetType().Name}'."),
         };
         SearchIndexSnapshot snapshot = new()
@@ -182,17 +193,61 @@ public sealed class CollectionSearchIndex
         };
     }
 
-    private static IVectorIndex CreateVectorIndex(CollectionDefinition definition, VectorIndexKind kind) => kind switch
+    public void Dispose()
     {
-        VectorIndexKind.Flat => new FlatVectorIndex(definition.Dimension, definition.Metric),
-        VectorIndexKind.Hnsw => new HnswIndex(
-            definition.Dimension,
-            definition.Metric,
-            definition.VectorIndex.HnswM,
-            definition.VectorIndex.HnswEfConstruction,
-            definition.VectorIndex.HnswEfSearch),
-        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown vector-index kind."),
-    };
+        if (_vector is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+    }
+
+    private static IVectorIndex CreateVectorIndex(
+        CollectionDefinition definition,
+        VectorIndexKind kind,
+        string? diskAnnArtifactDirectory) => kind switch
+        {
+            VectorIndexKind.Flat when definition.VectorIndex.Quantization == VectorQuantizationKind.Float32 =>
+                new FlatVectorIndex(definition.Dimension, definition.Metric),
+            VectorIndexKind.Flat => new ScalarQuantizedVectorIndex(
+                definition.Dimension,
+                definition.Metric,
+                definition.VectorIndex.Quantization,
+                definition.VectorIndex.RerankCandidateMultiplier),
+            VectorIndexKind.Hnsw => new HnswIndex(
+                definition.Dimension,
+                definition.Metric,
+                definition.VectorIndex.HnswM,
+                definition.VectorIndex.HnswEfConstruction,
+                definition.VectorIndex.HnswEfSearch),
+            VectorIndexKind.IvfFlat => new IvfFlatIndex(
+                definition.Dimension,
+                definition.Metric,
+                definition.VectorIndex.IvfListCount,
+                definition.VectorIndex.IvfProbeCount,
+                definition.VectorIndex.IvfTrainingIterations),
+            VectorIndexKind.IvfPq => new IvfPqIndex(
+                definition.Dimension,
+                definition.Metric,
+                definition.VectorIndex.IvfListCount,
+                definition.VectorIndex.IvfProbeCount,
+                definition.VectorIndex.IvfTrainingIterations,
+                definition.VectorIndex.PqSubvectorCount,
+                definition.VectorIndex.PqCentroidCount,
+                definition.VectorIndex.PqTrainingIterations,
+                definition.VectorIndex.RerankCandidateMultiplier),
+            VectorIndexKind.DiskAnn => new DiskAnnIndex(
+                definition.Dimension,
+                definition.Metric,
+                definition.VectorIndex.DiskAnnMaxDegree,
+                definition.VectorIndex.DiskAnnSearchListSize,
+                definition.VectorIndex.DiskAnnBeamWidth,
+                definition.VectorIndex.DiskAnnDeltaThreshold,
+                diskAnnArtifactDirectory,
+                definition.VectorIndex.DiskAnnPageSize,
+                definition.VectorIndex.DiskAnnCachePages,
+                definition.VectorIndex.DiskAnnRetainedGenerations),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown vector-index kind."),
+        };
 
     private static bool TryRestore(
         byte[]? persisted,
@@ -204,6 +259,7 @@ public sealed class CollectionSearchIndex
         double bm25K1,
         double bm25B,
         int maximumTermsPerDocument,
+        string? diskAnnArtifactDirectory,
         out IVectorIndex vector,
         out Bm25Index text,
         out MetadataIndex metadata)
@@ -236,8 +292,13 @@ public sealed class CollectionSearchIndex
 
         IVectorIndex? restoredVector = vectorKind switch
         {
-            VectorIndexKind.Flat => FlatVectorIndex.Deserialize(snapshot.Vector, definition),
+            VectorIndexKind.Flat when definition.VectorIndex.Quantization == VectorQuantizationKind.Float32 =>
+                FlatVectorIndex.Deserialize(snapshot.Vector, definition),
+            VectorIndexKind.Flat => ScalarQuantizedVectorIndex.Deserialize(snapshot.Vector, definition),
             VectorIndexKind.Hnsw => HnswIndex.Deserialize(snapshot.Vector, definition, documentSignature),
+            VectorIndexKind.IvfFlat => IvfFlatIndex.Deserialize(snapshot.Vector, definition),
+            VectorIndexKind.IvfPq => IvfPqIndex.Deserialize(snapshot.Vector, definition),
+            VectorIndexKind.DiskAnn => DiskAnnIndex.Deserialize(snapshot.Vector, definition, diskAnnArtifactDirectory),
             _ => null,
         };
         Bm25Index? restoredText = Bm25Index.Deserialize(

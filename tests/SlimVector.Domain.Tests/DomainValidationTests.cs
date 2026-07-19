@@ -3,6 +3,21 @@ namespace SlimVector.Domain.Tests;
 public sealed class DomainValidationTests
 {
     [Fact]
+    public void ProductQuantizationRequiresDimensionDivisibility()
+    {
+        VectorIndexConfiguration configuration = new()
+        {
+            Kind = VectorIndexKind.IvfPq,
+            PqSubvectorCount = 8,
+        };
+
+        DomainException exception = Assert.Throws<DomainException>(() =>
+            DomainValidation.ValidateVectorIndex(configuration, dimension: 10));
+
+        Assert.Equal(ErrorCodes.InvalidIndexConfiguration, exception.Code);
+    }
+
+    [Fact]
     public void CreateCollectionRejectsUnsafeName()
     {
         DomainException exception = Assert.Throws<DomainException>(() =>

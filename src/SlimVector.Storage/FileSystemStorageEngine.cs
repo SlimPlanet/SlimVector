@@ -113,7 +113,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         ArgumentNullException.ThrowIfNull(definition);
         DomainValidation.ValidateCollectionName(definition.Name);
         DomainValidation.ValidateDimension(definition.Dimension);
-        DomainValidation.ValidateVectorIndex(definition.VectorIndex);
+        DomainValidation.ValidateVectorIndex(definition.VectorIndex, definition.Dimension);
 
         await _catalogLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -147,7 +147,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(definition);
         DomainValidation.ValidateCollectionName(definition.Name);
-        DomainValidation.ValidateVectorIndex(definition.VectorIndex);
+        DomainValidation.ValidateVectorIndex(definition.VectorIndex, definition.Dimension);
 
         await _catalogLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try

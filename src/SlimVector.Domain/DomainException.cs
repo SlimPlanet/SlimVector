@@ -25,6 +25,8 @@ public static class ErrorCodes
     public const string InvalidIndexConfiguration = "invalid_index_configuration";
     public const string InvalidLimit = "invalid_limit";
     public const string InvalidMetadata = "invalid_metadata";
+    public const string MembershipConflict = "membership_conflict";
+    public const string MembershipMemberNotFound = "membership_member_not_found";
     public const string InvalidVector = "invalid_vector";
     public const string InvalidWeights = "invalid_weights";
     public const string QueueSaturated = "queue_saturated";

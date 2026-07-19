@@ -14,9 +14,17 @@ Allow 307 redirects without changing POST/PATCH to GET. If `Location` is absent,
 
 Check process/network reachability on the catalog base port plus every data-group offset. A three-node group needs two reachable members. Look for repeated term changes and compare committed/applied indexes. Restore one failed member at a time; never point a new node at another node's live volume.
 
-## `429 queue_saturated`
+## HTTP 429
 
-Identify the limiting dimension from metrics and the error detail: global, client, collection, or shard. Reduce producer concurrency or payload size first. Increase capacities only after confirming memory headroom. If replication latency is high, fix disk/network/quorum health instead of hiding it with a larger queue.
+Read `X-SlimVector-RateLimit-Kind` and `X-SlimVector-RateLimit-Scope`, then honor `Retry-After`. A contractual refusal identifies global/client/collection/operation policy. A congestion refusal identifies queue, memory, Raft lag/quorum, or errors. Reduce producer concurrency or payload first. Increase limits only after confirming memory headroom; fix disk/network/quorum health rather than hiding it with larger queues.
+
+## Auto migration is rejected or failed
+
+Read the authenticated index status reason and migration metrics. `rejected` means count, sampled recall, or measured gain missed policy; the old generation remains active. `failed` means training/build/persistence failed and likewise does not switch the manifest. Check PQ divisibility, DiskANN path permissions/capacity, memory headroom, and validation settings. Rollback is available only after a successful generation switch.
+
+## Membership change conflict
+
+HTTP 409 `membership_conflict` means another change owns the group, removal violates `MinimumVotingMembers`, or the target is the current leader. Query membership status, wait for catch-up, transfer leadership when necessary, and operate one group at a time. A new joiner must use `JoinExistingCluster=true` with empty member arrays; never seed it as an independent one-node cluster.
 
 ## Slow query
 

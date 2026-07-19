@@ -125,6 +125,83 @@ public sealed class SlimVectorClient
             ClientJsonContext.Default.SlimVectorQueryResult,
             cancellationToken);
 
+    public async Task<IndexStatusInfo> GetIndexStatusAsync(
+        string collection,
+        string adminApiKey,
+        CancellationToken cancellationToken = default)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Get,
+            $"api/v1/admin/collections/{Uri.EscapeDataString(collection)}/index");
+        request.Headers.Add("X-SlimVector-Admin-Key", adminApiKey);
+        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return await ReadResponseAsync(response, ClientJsonContext.Default.IndexStatusInfo, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> RollbackIndexAsync(
+        string collection,
+        string adminApiKey,
+        CancellationToken cancellationToken = default)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            $"api/v1/admin/collections/{Uri.EscapeDataString(collection)}/index/rollback");
+        request.Headers.Add("X-SlimVector-Admin-Key", adminApiKey);
+        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        AdminOperationInfo result = await ReadResponseAsync(
+            response,
+            ClientJsonContext.Default.AdminOperationInfo,
+            cancellationToken).ConfigureAwait(false);
+        return string.Equals(result.Status, "rolled-back", StringComparison.Ordinal);
+    }
+
+    public async Task<ClusterMembershipInfo> GetClusterMembershipAsync(
+        string adminApiKey,
+        CancellationToken cancellationToken = default)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Get, "api/v1/admin/cluster/membership");
+        request.Headers.Add("X-SlimVector-Admin-Key", adminApiKey);
+        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return await ReadResponseAsync(
+            response,
+            ClientJsonContext.Default.ClusterMembershipInfo,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task AddClusterMemberAsync(
+        string groupId,
+        string endpoint,
+        string adminApiKey,
+        CancellationToken cancellationToken = default) =>
+        ChangeClusterMembershipAsync("add", groupId, endpoint, adminApiKey, cancellationToken);
+
+    public Task PromoteClusterMemberAsync(
+        string groupId,
+        string endpoint,
+        string adminApiKey,
+        CancellationToken cancellationToken = default) =>
+        ChangeClusterMembershipAsync("promote", groupId, endpoint, adminApiKey, cancellationToken);
+
+    public Task DemoteClusterMemberAsync(
+        string groupId,
+        string endpoint,
+        string adminApiKey,
+        CancellationToken cancellationToken = default) =>
+        ChangeClusterMembershipAsync("demote", groupId, endpoint, adminApiKey, cancellationToken);
+
+    public Task RemoveClusterMemberAsync(
+        string groupId,
+        string endpoint,
+        string adminApiKey,
+        CancellationToken cancellationToken = default) =>
+        ChangeClusterMembershipAsync("remove", groupId, endpoint, adminApiKey, cancellationToken);
+
+    public Task TransferClusterLeadershipAsync(
+        string groupId,
+        string adminApiKey,
+        CancellationToken cancellationToken = default) =>
+        ChangeClusterMembershipAsync("transfer-leadership", groupId, endpoint: null, adminApiKey, cancellationToken);
+
     private Task<BatchResult> MutateDocumentsAsync(
         string collection,
         string operation,
@@ -138,6 +215,35 @@ public sealed class SlimVectorClient
             ClientJsonContext.Default.DocumentBatch,
             ClientJsonContext.Default.BatchResult,
             cancellationToken);
+
+    private async Task ChangeClusterMembershipAsync(
+        string operation,
+        string groupId,
+        string? endpoint,
+        string adminApiKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        if (!string.Equals(operation, "transfer-leadership", StringComparison.Ordinal))
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        }
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            $"api/v1/admin/cluster/membership/{operation}")
+        {
+            Content = JsonContent.Create(
+                new MembershipChange { GroupId = groupId, Endpoint = endpoint },
+                ClientJsonContext.Default.MembershipChange),
+        };
+        request.Headers.Add("X-SlimVector-Admin-Key", adminApiKey);
+        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        _ = await ReadResponseAsync(
+            response,
+            ClientJsonContext.Default.AdminOperationInfo,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     private async Task<TResponse> GetAsync<TResponse>(
         string path,

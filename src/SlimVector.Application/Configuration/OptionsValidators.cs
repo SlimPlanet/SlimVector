@@ -48,6 +48,118 @@ internal sealed class VectorIndexOptionsValidator : IValidateOptions<VectorIndex
     }
 }
 
+internal sealed class AutoIndexOptionsValidator : IValidateOptions<AutoIndexOptions>
+{
+    public ValidateOptionsResult Validate(string? name, AutoIndexOptions options)
+    {
+        List<string> failures = [];
+        if (options.AllowedIndexes.Length == 0 || options.AllowedIndexes.Contains(VectorIndexKind.Auto) ||
+            options.AllowedIndexes.Any(static kind => !Enum.IsDefined(kind)))
+        {
+            failures.Add("AutoIndex:AllowedIndexes must contain concrete index kinds.");
+        }
+
+        if (options.AssessmentInterval <= TimeSpan.Zero || options.MinimumMigrationInterval < options.AssessmentInterval)
+        {
+            failures.Add("AutoIndex migration interval must be at least the positive assessment interval.");
+        }
+
+        if (options.HysteresisRatio is < 0 or > 1 || options.MinimumRecall is <= 0 or > 1 ||
+            options.MinimumPerformanceGain is < 0 or > 1 || options.DiskAnnMemoryRatio is <= 0 or > 1 ||
+            options.HighUpdateRatio is < 0 or > 1)
+        {
+            failures.Add("AutoIndex ratios must be within their documented zero-to-one ranges.");
+        }
+
+        if (options.ValidationSampleSize < 1 || options.HnswMinimumVectors < 1 ||
+            options.IvfMinimumVectors < options.HnswMinimumVectors || options.PqMinimumVectors < options.IvfMinimumVectors)
+        {
+            failures.Add("AutoIndex validation size and ascending vector-count thresholds are invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
+internal sealed class HnswOptionsValidator : IValidateOptions<HnswOptions>
+{
+    public ValidateOptionsResult Validate(string? name, HnswOptions options) => ValidateIndex(new VectorIndexConfiguration
+    {
+        HnswM = options.M,
+        HnswEfConstruction = options.EfConstruction,
+        HnswEfSearch = options.EfSearch,
+    });
+
+    private static ValidateOptionsResult ValidateIndex(VectorIndexConfiguration configuration)
+    {
+        try
+        {
+            DomainValidation.ValidateVectorIndex(configuration);
+            return ValidateOptionsResult.Success;
+        }
+        catch (DomainException exception)
+        {
+            return ValidateOptionsResult.Fail(exception.Message);
+        }
+    }
+}
+
+internal sealed class IvfOptionsValidator : IValidateOptions<IvfOptions>
+{
+    public ValidateOptionsResult Validate(string? name, IvfOptions options)
+    {
+        List<string> failures = [];
+        if (options.ListCount is < 1 or > 65_536 || options.ProbeCount < 1 ||
+            options.ProbeCount > options.ListCount || options.TrainingIterations is < 1 or > 1_000)
+        {
+            failures.Add("IVF list count, probe count, or training iterations are invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
+internal sealed class PqOptionsValidator : IValidateOptions<PqOptions>
+{
+    public ValidateOptionsResult Validate(string? name, PqOptions options)
+    {
+        List<string> failures = [];
+        if (options.SubvectorCount is < 1 or > 1_024 || options.CentroidCount is < 2 or > 256 ||
+            options.TrainingIterations is < 1 or > 1_000 || options.RerankCandidateMultiplier is < 1 or > 100)
+        {
+            failures.Add("PQ subvector, centroid, training, or re-rank configuration is invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
+internal sealed class DiskAnnOptionsValidator : IValidateOptions<DiskAnnOptions>
+{
+    public ValidateOptionsResult Validate(string? name, DiskAnnOptions options)
+    {
+        List<string> failures = [];
+        if (string.IsNullOrWhiteSpace(options.Path))
+        {
+            failures.Add("DiskAnn:Path is required.");
+        }
+
+        if (options.MaxDegree is < 2 or > 512 || options.SearchListSize < options.MaxDegree ||
+            options.SearchListSize > 16_384 || options.BeamWidth is < 1 or > 256 || options.DeltaThreshold < 1)
+        {
+            failures.Add("DiskANN graph and delta configuration is invalid.");
+        }
+
+        if (options.PageSize < 512 || !System.Numerics.BitOperations.IsPow2((uint)options.PageSize) ||
+            options.CachePages < 1 || options.RetainedGenerations < 2)
+        {
+            failures.Add("DiskANN page size must be a power of two and cache/generation retention must be positive.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
 internal sealed class TextIndexOptionsValidator : IValidateOptions<TextIndexOptions>
 {
     public ValidateOptionsResult Validate(string? name, TextIndexOptions options)
@@ -97,12 +209,20 @@ public sealed class RaftOptionsValidator : IValidateOptions<RaftOptions>
             failures.Add("Raft:PublicApiEndpoint must be an absolute HTTP(S) URI.");
         }
 
-        if (options.Mode == ExecutionMode.Cluster && options.Members.Length < 3)
+        if (options.Mode == ExecutionMode.Cluster && options.JoinExistingCluster && options.Members.Length != 0)
+        {
+            failures.Add("Raft:Members must be empty when Raft:JoinExistingCluster is true; membership is installed through Raft consensus.");
+        }
+        else if (options.Mode == ExecutionMode.Cluster && options.JoinExistingCluster && options.MemberApiEndpoints.Length != 0)
+        {
+            failures.Add("Raft:MemberApiEndpoints must be empty when Raft:JoinExistingCluster is true.");
+        }
+        else if (options.Mode == ExecutionMode.Cluster && !options.JoinExistingCluster && options.Members.Length < 3)
         {
             failures.Add("Raft:Members must contain at least three members in cluster mode.");
         }
 
-        else if (options.Mode == ExecutionMode.Cluster)
+        else if (options.Mode == ExecutionMode.Cluster && !options.JoinExistingCluster)
         {
             IPEndPoint[] members = options.Members
                 .Select(member => TryParseEndpoint(member, out IPEndPoint? endpoint) ? endpoint : null)
@@ -182,6 +302,26 @@ public sealed class RaftOptionsValidator : IValidateOptions<RaftOptions>
     }
 }
 
+internal sealed class ClusterMembershipOptionsValidator : IValidateOptions<ClusterMembershipOptions>
+{
+    public ValidateOptionsResult Validate(string? name, ClusterMembershipOptions options)
+    {
+        List<string> failures = [];
+        if (options.WarmupRounds < 1 || options.MaximumCatchUpLagEntries < 0 || options.MinimumVotingMembers < 1)
+        {
+            failures.Add("ClusterMembership round, lag, and minimum-voter settings are invalid.");
+        }
+
+        if (options.CatchUpTimeout <= TimeSpan.Zero || options.OperationTimeout <= TimeSpan.Zero ||
+            options.OperationTimeout > options.CatchUpTimeout)
+        {
+            failures.Add("ClusterMembership timeouts must be positive and operation timeout may not exceed catch-up timeout.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
 internal sealed class GeoReplicationOptionsValidator : IValidateOptions<GeoReplicationOptions>
 {
     public ValidateOptionsResult Validate(string? name, GeoReplicationOptions options)
@@ -256,6 +396,42 @@ internal sealed class BackpressureOptionsValidator : IValidateOptions<Backpressu
         }
 
         return ValidationHelpers.Result(failures);
+    }
+}
+
+internal sealed class RateLimitOptionsValidator : IValidateOptions<RateLimitOptions>
+{
+    public ValidateOptionsResult Validate(string? name, RateLimitOptions options)
+    {
+        List<string> failures = [];
+        ValidateBucket(options.Global, "Global", failures);
+        ValidateBucket(options.Client, "Client", failures);
+        ValidateBucket(options.Collection, "Collection", failures);
+        ValidateBucket(options.Read, "Read", failures);
+        ValidateBucket(options.Write, "Write", failures);
+        ValidateBucket(options.Admin, "Admin", failures);
+        if (options.ReservedReadFraction is < 0 or >= 1 || options.ReservedWriteFraction is < 0 or >= 1 ||
+            options.ReservedReadFraction + options.ReservedWriteFraction >= 1)
+        {
+            failures.Add("RateLimit reserved fractions must be non-negative and sum to less than one.");
+        }
+
+        if (options.IdleBucketExpiration <= TimeSpan.Zero || options.RecoveryWindow <= TimeSpan.Zero ||
+            options.MinimumAdaptiveRateRatio is <= 0 or > 1)
+        {
+            failures.Add("RateLimit expiration, recovery, and minimum adaptive ratio are invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+
+    private static void ValidateBucket(TokenBucketOptions bucket, string name, List<string> failures)
+    {
+        if (!double.IsFinite(bucket.TokensPerSecond) || bucket.TokensPerSecond <= 0 ||
+            !double.IsFinite(bucket.BurstCapacity) || bucket.BurstCapacity < bucket.TokensPerSecond)
+        {
+            failures.Add($"RateLimit:{name} token rate must be positive and burst capacity must be at least the rate.");
+        }
     }
 }
 

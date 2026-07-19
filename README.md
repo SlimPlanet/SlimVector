@@ -1,6 +1,6 @@
 # SlimVector
 
-SlimVector is a .NET 10 hybrid vector database with durable single-node operation, independent DotNext Raft groups for clustered operation, adaptive write batching, and geographic disaster-recovery replication. It combines exact SIMD or HNSW vector search, BM25 text search, typed metadata filters, and weighted reciprocal-rank fusion.
+SlimVector is a .NET 10 hybrid vector database with durable single-node operation, independent and dynamically evolving DotNext Raft groups, adaptive admission/batching, and separate geographic disaster-recovery replication. It combines exact SIMD, HNSW, IVF-Flat, IVF-PQ, scalar quantization and SSD DiskANN with BM25, typed metadata filters, and weighted reciprocal-rank fusion. Auto mode trains and validates index generations online with restart-safe rollback.
 
 ## Quick start
 
@@ -56,6 +56,7 @@ The first vector operation downloads the pinned Apache-2.0 Hugging Face model in
 ```bash
 docker compose -f compose.single-node.yml up --build
 docker compose -f compose.cluster.yml up --build
+docker compose -f compose.cluster.yml --profile joiner up --build
 docker compose -f compose.geo.yml up --build
 ```
 
@@ -110,8 +111,8 @@ The API project publishes with Native AOT and `TrimMode=full`. The narrowly scop
 
 - `SlimVector.Domain`: immutable domain model and validation
 - `SlimVector.Storage`: immutable segments, manifests, checksums, tombstones, compaction
-- `SlimVector.Indexing`: Flat SIMD, HNSW, BM25, metadata, rank fusion
-- `SlimVector.Raft`: deterministic commands, catalog/data Raft groups, snapshots
+- `SlimVector.Indexing`: Flat SIMD/quantization, HNSW, IVF-Flat/PQ, DiskANN, BM25, metadata, rank fusion
+- `SlimVector.Raft`: deterministic commands, catalog/data groups, snapshots, safe dynamic membership
 - `SlimVector.Replication`: durable inter-zone outbox and signed receiver
 - `SlimVector.Application`: lazy collection lifecycle, batching, backups, use cases
 - `SlimVector.Api`: source-generated Minimal API, OpenAPI, health, metrics

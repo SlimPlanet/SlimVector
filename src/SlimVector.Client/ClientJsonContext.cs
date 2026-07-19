@@ -20,5 +20,9 @@ namespace SlimVector.Client;
 [JsonSerializable(typeof(SlimVectorQuery))]
 [JsonSerializable(typeof(SlimVectorQueryResult))]
 [JsonSerializable(typeof(BatchResult))]
+[JsonSerializable(typeof(IndexStatusInfo))]
+[JsonSerializable(typeof(ClusterMembershipInfo))]
+[JsonSerializable(typeof(MembershipChange))]
+[JsonSerializable(typeof(AdminOperationInfo))]
 [JsonSerializable(typeof(ApiProblem))]
 internal sealed partial class ClientJsonContext : JsonSerializerContext;

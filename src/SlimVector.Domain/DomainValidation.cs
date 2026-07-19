@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text.RegularExpressions;
 
 namespace SlimVector.Domain;
@@ -47,6 +48,61 @@ public static partial class DomainValidation
         if (configuration.HnswEfSearch is < 1 or > 4_096)
         {
             throw new DomainException(ErrorCodes.InvalidIndexConfiguration, "HNSW efSearch must be between 1 and 4096.");
+        }
+
+        if (!Enum.IsDefined(configuration.Kind) || !Enum.IsDefined(configuration.Quantization))
+        {
+            throw new DomainException(ErrorCodes.InvalidIndexConfiguration, "The vector index kind or quantization kind is invalid.");
+        }
+
+        if (configuration.RerankCandidateMultiplier is < 1 or > 100)
+        {
+            throw new DomainException(ErrorCodes.InvalidIndexConfiguration, "The re-rank candidate multiplier must be between 1 and 100.");
+        }
+
+        if (configuration.IvfListCount is < 1 or > 65_536 ||
+            configuration.IvfProbeCount is < 1 || configuration.IvfProbeCount > configuration.IvfListCount ||
+            configuration.IvfTrainingIterations is < 1 or > 1_000)
+        {
+            throw new DomainException(
+                ErrorCodes.InvalidIndexConfiguration,
+                "IVF list count must be 1-65536, probe count must be 1-list count, and training iterations must be 1-1000.");
+        }
+
+        if (configuration.PqSubvectorCount is < 1 or > 1_024 ||
+            configuration.PqCentroidCount is < 2 or > 256 ||
+            configuration.PqTrainingIterations is < 1 or > 1_000)
+        {
+            throw new DomainException(
+                ErrorCodes.InvalidIndexConfiguration,
+                "PQ subvector count must be 1-1024, centroid count must be 2-256, and training iterations must be 1-1000.");
+        }
+
+        if (configuration.DiskAnnMaxDegree is < 2 or > 512 ||
+            configuration.DiskAnnSearchListSize < configuration.DiskAnnMaxDegree ||
+            configuration.DiskAnnSearchListSize > 16_384 ||
+            configuration.DiskAnnBeamWidth is < 1 or > 256 ||
+            configuration.DiskAnnDeltaThreshold < 1 ||
+            configuration.DiskAnnPageSize is < 512 or > 1_048_576 ||
+            !BitOperations.IsPow2(configuration.DiskAnnPageSize) ||
+            configuration.DiskAnnCachePages is < 1 or > 1_000_000 ||
+            configuration.DiskAnnRetainedGenerations is < 2 or > 64)
+        {
+            throw new DomainException(
+                ErrorCodes.InvalidIndexConfiguration,
+                "DiskANN degree, search-list, beam-width, or delta-threshold configuration is invalid.");
+        }
+    }
+
+    public static void ValidateVectorIndex(VectorIndexConfiguration configuration, int dimension)
+    {
+        ValidateVectorIndex(configuration);
+        ValidateDimension(dimension);
+        if (configuration.Kind == VectorIndexKind.IvfPq && dimension % configuration.PqSubvectorCount != 0)
+        {
+            throw new DomainException(
+                ErrorCodes.InvalidIndexConfiguration,
+                $"PQ subvector count {configuration.PqSubvectorCount} must divide vector dimension {dimension}.");
         }
     }
 

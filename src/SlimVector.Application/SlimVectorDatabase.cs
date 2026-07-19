@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SlimVector.Application.Configuration;
+using SlimVector.Application.Indexes;
 using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
@@ -15,6 +16,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
 {
     private const string HnswDerivedDataName = "vector-hnsw-v1";
     private const string SearchIndexDerivedDataName = "search-index-v1";
+    private const string SearchIndexManifestDataName = "search-index-manifest-v1";
     private readonly IStorageEngine _storage;
     private readonly IConsensusCoordinator _consensus;
     private readonly IWriteScheduler _writeScheduler;
@@ -24,6 +26,11 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
     private readonly TextIndexOptions _textIndexOptions;
     private readonly MetadataIndexOptions _metadataIndexOptions;
     private readonly ObservabilityOptions _observabilityOptions;
+    private readonly AutoIndexOptions _autoIndexOptions;
+    private readonly HnswOptions _hnswOptions;
+    private readonly IvfOptions _ivfOptions;
+    private readonly PqOptions _pqOptions;
+    private readonly DiskAnnOptions _diskAnnOptions;
     private readonly OperationalMetrics _metrics;
     private readonly ILogger<SlimVectorDatabase> _logger;
     private readonly ConcurrentDictionary<Guid, Lazy<Task<CollectionRuntime>>> _runtimes = new();
@@ -39,8 +46,13 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         IOptions<TextIndexOptions>? textIndexOptions = null,
         IOptions<MetadataIndexOptions>? metadataIndexOptions = null,
         IOptions<ObservabilityOptions>? observabilityOptions = null,
+        IOptions<AutoIndexOptions>? autoIndexOptions = null,
+        IOptions<DiskAnnOptions>? diskAnnOptions = null,
         OperationalMetrics? metrics = null,
-        ILogger<SlimVectorDatabase>? logger = null)
+        ILogger<SlimVectorDatabase>? logger = null,
+        IOptions<HnswOptions>? hnswOptions = null,
+        IOptions<IvfOptions>? ivfOptions = null,
+        IOptions<PqOptions>? pqOptions = null)
     {
         _storage = storage;
         _consensus = consensus;
@@ -51,12 +63,34 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         _textIndexOptions = textIndexOptions?.Value ?? new TextIndexOptions();
         _metadataIndexOptions = metadataIndexOptions?.Value ?? new MetadataIndexOptions();
         _observabilityOptions = observabilityOptions?.Value ?? new ObservabilityOptions();
+        _autoIndexOptions = autoIndexOptions?.Value ?? new AutoIndexOptions
+        {
+            HnswMinimumVectors = _vectorIndexOptions.AutoHnswThreshold,
+        };
+        _hnswOptions = hnswOptions?.Value ?? new HnswOptions();
+        _ivfOptions = ivfOptions?.Value ?? new IvfOptions();
+        _pqOptions = pqOptions?.Value ?? new PqOptions();
+        _diskAnnOptions = diskAnnOptions?.Value ?? new DiskAnnOptions();
         _metrics = metrics ?? new OperationalMetrics();
         _logger = logger ?? NullLogger<SlimVectorDatabase>.Instance;
         _consensus.StateChanged += InvalidateRuntime;
     }
 
     public int OpenCollectionCount => _runtimes.Count;
+
+    public IReadOnlyList<IndexRuntimeMetrics> GetOpenIndexMetrics()
+    {
+        List<IndexRuntimeMetrics> metrics = [];
+        foreach (Lazy<Task<CollectionRuntime>> lazy in _runtimes.Values)
+        {
+            if (lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully)
+            {
+                metrics.Add(lazy.Value.Result.GetRuntimeMetrics());
+            }
+        }
+
+        return metrics.OrderBy(static item => item.Collection, StringComparer.Ordinal).ToArray();
+    }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -98,6 +132,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
+        vectorIndex ??= CreateDefaultVectorIndexConfiguration();
         CollectionDefinition definition = CollectionDefinition.Create(
             name,
             dimension,
@@ -151,7 +186,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         string name = newName ?? current.Name;
         DomainValidation.ValidateCollectionName(name);
         VectorIndexConfiguration configuration = vectorIndex ?? current.VectorIndex;
-        DomainValidation.ValidateVectorIndex(configuration);
+        DomainValidation.ValidateVectorIndex(configuration, current.Dimension);
         CollectionDefinition updated = current with
         {
             Name = name,
@@ -171,7 +206,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         if (_runtimes.TryRemove(definition.Id, out Lazy<Task<CollectionRuntime>>? lazy) && lazy.IsValueCreated)
         {
             CollectionRuntime runtime = await lazy.Value.ConfigureAwait(false);
-            runtime.MarkEvicted();
+            runtime.Dispose();
         }
     }
 
@@ -239,6 +274,16 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         }
     }
 
+    public ValueTask<IndexMigrationStatus> GetIndexStatusAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(collectionName, static runtime => runtime.GetMigrationStatusAsync(), cancellationToken);
+
+    public ValueTask<bool> RollbackIndexAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(collectionName, runtime => runtime.RollbackIndexAsync(cancellationToken), cancellationToken);
+
     public ValueTask<int> EvictInactiveCollectionsAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -253,6 +298,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
             CollectionRuntime runtime = lazy.Value.Result;
             if (runtime.TryMarkEvicted(_collectionsOptions.IdleTimeout) && _runtimes.TryRemove(new KeyValuePair<Guid, Lazy<Task<CollectionRuntime>>>(id, lazy)))
             {
+                runtime.Dispose();
                 evicted++;
             }
         }
@@ -314,6 +360,8 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
         bool succeeded = false;
         bool restoredPersistedIndex = false;
         byte[]? persistedVectorIndex = null;
+        byte[]? persistedPreviousVectorIndex = null;
+        IndexGenerationManifest? persistedManifest = null;
         VectorIndexKind effectiveKind = definition.VectorIndex.Kind;
         try
         {
@@ -321,14 +369,34 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
                 .LoadDocumentsAsync(definition.Id, cancellationToken)
                 .ConfigureAwait(false);
             documentCount = documents.Count;
-            effectiveKind = definition.VectorIndex.Kind == VectorIndexKind.Auto
+            if (definition.VectorIndex.Kind == VectorIndexKind.Auto)
+            {
+                byte[]? manifestData = await _storage
+                    .ReadDerivedDataAsync(definition.Id, SearchIndexManifestDataName, cancellationToken)
+                    .ConfigureAwait(false);
+                persistedManifest = manifestData is null ? null : IndexGenerationManifestCodec.Deserialize(manifestData);
+            }
+
+            effectiveKind = persistedManifest?.ActiveKind ?? (definition.VectorIndex.Kind == VectorIndexKind.Auto
                 ? documentCount >= _vectorIndexOptions.AutoHnswThreshold ? VectorIndexKind.Hnsw : VectorIndexKind.Flat
-                : definition.VectorIndex.Kind;
-            persistedVectorIndex = await _storage
-                .ReadDerivedDataAsync(definition.Id, SearchIndexDerivedDataName, cancellationToken)
-                .ConfigureAwait(false) ?? await _storage
+                : definition.VectorIndex.Kind);
+            persistedVectorIndex = persistedManifest is null
+                ? await _storage.ReadDerivedDataAsync(definition.Id, SearchIndexDerivedDataName, cancellationToken).ConfigureAwait(false)
+                : await _storage.ReadDerivedDataAsync(
+                    definition.Id,
+                    $"search-index-generation-{persistedManifest.ActiveGeneration}",
+                    cancellationToken).ConfigureAwait(false);
+            persistedVectorIndex ??= await _storage
                 .ReadDerivedDataAsync(definition.Id, HnswDerivedDataName, cancellationToken)
                 .ConfigureAwait(false);
+            if (persistedManifest?.PreviousGeneration is { } previousGeneration && persistedManifest.PreviousKind.HasValue)
+            {
+                persistedPreviousVectorIndex = await _storage.ReadDerivedDataAsync(
+                    definition.Id,
+                    $"search-index-generation-{previousGeneration}",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             CollectionRuntime runtime = new(
                 definition,
                 documents,
@@ -340,7 +408,12 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
                 persistedVectorIndex,
                 _textIndexOptions.Bm25K1,
                 _textIndexOptions.Bm25B,
-                _textIndexOptions.MaximumTermsPerDocument);
+                _textIndexOptions.MaximumTermsPerDocument,
+                _autoIndexOptions,
+                _diskAnnOptions,
+                persistedManifest,
+                persistedPreviousVectorIndex,
+                _metrics);
             restoredPersistedIndex = runtime.RestoredPersistedIndex;
             succeeded = true;
             return runtime;
@@ -400,6 +473,28 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
 
     private static DomainException NotFound(string name) =>
         new(ErrorCodes.CollectionNotFound, $"Collection '{name}' was not found.");
+
+    private VectorIndexConfiguration CreateDefaultVectorIndexConfiguration() => new()
+    {
+        Kind = VectorIndexKind.Auto,
+        HnswM = _hnswOptions.M,
+        HnswEfConstruction = _hnswOptions.EfConstruction,
+        HnswEfSearch = _hnswOptions.EfSearch,
+        RerankCandidateMultiplier = _pqOptions.RerankCandidateMultiplier,
+        IvfListCount = _ivfOptions.ListCount,
+        IvfProbeCount = _ivfOptions.ProbeCount,
+        IvfTrainingIterations = _ivfOptions.TrainingIterations,
+        PqSubvectorCount = _pqOptions.SubvectorCount,
+        PqCentroidCount = _pqOptions.CentroidCount,
+        PqTrainingIterations = _pqOptions.TrainingIterations,
+        DiskAnnMaxDegree = _diskAnnOptions.MaxDegree,
+        DiskAnnSearchListSize = _diskAnnOptions.SearchListSize,
+        DiskAnnBeamWidth = _diskAnnOptions.BeamWidth,
+        DiskAnnDeltaThreshold = _diskAnnOptions.DeltaThreshold,
+        DiskAnnPageSize = _diskAnnOptions.PageSize,
+        DiskAnnCachePages = _diskAnnOptions.CachePages,
+        DiskAnnRetainedGenerations = _diskAnnOptions.RetainedGenerations,
+    };
 
     private static void ValidateFilterDepth(MetadataFilter? filter, int maximumDepth)
     {

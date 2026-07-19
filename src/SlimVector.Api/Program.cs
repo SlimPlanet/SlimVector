@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using SlimVector.Api;
 using SlimVector.Api.Contracts;
 using SlimVector.Application;
+using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Writes;
@@ -63,6 +64,7 @@ app.Use(async (context, next) =>
     await next(context).ConfigureAwait(false);
 });
 app.UseRequestTimeouts();
+app.UseMiddleware<AdmissionMiddleware>();
 app.Use(async (context, next) =>
 {
     bool writesPublicApi = context.Request.Path.StartsWithSegments(apiOptions.RoutePrefix, StringComparison.Ordinal) &&
@@ -90,10 +92,12 @@ app.MapGet("/metrics", static (
     ISlimVectorDatabase database,
     OperationalMetrics operationalMetrics,
     IConsensusCoordinator consensus,
+    IClusterMembershipCoordinator membership,
     IWriteScheduler writeScheduler,
     IBackupService backups,
     IGeoReplicationService geoReplication,
     IGeoReplicationReceiver geoReceiver,
+    IAdmissionController admission,
     Microsoft.Extensions.Options.IOptions<ObservabilityOptions> observability) =>
 {
     if (!observability.Value.MetricsEnabled)
@@ -120,8 +124,27 @@ app.MapGet("/metrics", static (
         $"slimvector_index_documents_loaded_total {operations.IndexedDocumentsLoaded}\n" +
         $"slimvector_index_kind_loads_total{{kind=\"flat\"}} {operations.FlatIndexLoads}\n" +
         $"slimvector_index_kind_loads_total{{kind=\"hnsw\"}} {operations.HnswIndexLoads}\n" +
+        $"slimvector_index_kind_loads_total{{kind=\"ivf_flat\"}} {operations.IvfFlatIndexLoads}\n" +
+        $"slimvector_index_kind_loads_total{{kind=\"ivf_pq\"}} {operations.IvfPqIndexLoads}\n" +
+        $"slimvector_index_kind_loads_total{{kind=\"disk_ann\"}} {operations.DiskAnnIndexLoads}\n" +
         $"slimvector_hnsw_cache_hits_total {operations.HnswCacheHits}\n" +
-        $"slimvector_hnsw_cache_misses_total {operations.HnswCacheMisses}\n";
+        $"slimvector_hnsw_cache_misses_total {operations.HnswCacheMisses}\n" +
+        $"slimvector_index_migrations_total {operations.IndexMigrations}\n" +
+        $"slimvector_index_migration_failures_total {operations.IndexMigrationFailures}\n" +
+        $"slimvector_index_migration_duration_microseconds_total {operations.IndexMigrationMicroseconds}\n" +
+        $"slimvector_index_migration_last_recall {operations.LastIndexMigrationRecall}\n";
+    foreach (SlimVector.Application.Indexes.IndexRuntimeMetrics index in database.GetOpenIndexMetrics())
+    {
+        string collection = EscapePrometheusLabel(index.Collection);
+        string kind = EscapePrometheusLabel(index.ActiveKind.ToString());
+        string state = EscapePrometheusLabel(index.MigrationState);
+        string labels = $"collection=\"{collection}\",kind=\"{kind}\",state=\"{state}\"";
+        body += $"slimvector_index_active{{{labels}}} 1\n" +
+            $"slimvector_index_documents{{{labels}}} {index.DocumentCount}\n" +
+            $"slimvector_index_estimated_resident_bytes{{{labels}}} {index.EstimatedResidentBytes}\n" +
+            $"slimvector_index_persisted_snapshot_bytes{{{labels}}} {index.PersistedSnapshotBytes}\n";
+    }
+
     foreach (RaftGroupStatus status in consensus.GetStatuses())
     {
         string labels = $"group=\"{status.GroupId}\",local=\"{status.LocalEndpoint}\"";
@@ -130,6 +153,32 @@ app.MapGet("/metrics", static (
             $"slimvector_raft_last_applied_index{{{labels}}} {status.LastAppliedIndex}\n" +
             $"slimvector_raft_last_committed_index{{{labels}}} {status.LastCommittedIndex}\n" +
             $"slimvector_raft_applied_commands_total{{{labels}}} {status.AppliedCommandCount}\n";
+    }
+
+    foreach (ClusterMembershipStatus status in membership.GetMembershipStatuses())
+    {
+        string group = EscapePrometheusLabel(status.GroupId);
+        body += $"slimvector_raft_members{{group=\"{group}\"}} {status.Members.Count}\n" +
+            $"slimvector_raft_membership_change_in_progress{{group=\"{group}\"}} {(status.ChangeState is null ? 0 : 1)}\n";
+        if (status.ChangeState is not null)
+        {
+            body += $"slimvector_raft_membership_change_info{{group=\"{group}\",state=\"{EscapePrometheusLabel(status.ChangeState)}\",endpoint=\"{EscapePrometheusLabel(status.ChangeEndpoint ?? string.Empty)}\"}} 1\n";
+        }
+
+        foreach (RaftMemberStatus member in status.Members)
+        {
+            string memberLabels = $"group=\"{group}\",endpoint=\"{EscapePrometheusLabel(member.Endpoint)}\",transport=\"{EscapePrometheusLabel(member.TransportStatus)}\"";
+            body += $"slimvector_raft_member_info{{{memberLabels},leader=\"{member.IsLeader.ToString().ToLowerInvariant()}\",remote=\"{member.IsRemote.ToString().ToLowerInvariant()}\"}} 1\n";
+            if (member.MatchIndex.HasValue)
+            {
+                body += $"slimvector_raft_member_match_index{{{memberLabels}}} {member.MatchIndex.Value}\n";
+            }
+
+            if (member.ReplicationLag.HasValue)
+            {
+                body += $"slimvector_raft_member_replication_lag{{{memberLabels}}} {member.ReplicationLag.Value}\n";
+            }
+        }
     }
 
     WriteSchedulerSnapshot writes = writeScheduler.GetSnapshot();
@@ -167,13 +216,25 @@ app.MapGet("/metrics", static (
         $"slimvector_geo_duplicate_events_total {incomingGeo.DuplicateEvents}\n" +
         $"slimvector_geo_divergence_events_total {incomingGeo.DivergenceEvents}\n" +
         $"slimvector_geo_replication_lag_seconds {outgoingGeo.ReplicationLag.TotalSeconds}\n";
+    AdmissionMetricsSnapshot admissionMetrics = admission.GetSnapshot();
+    body += $"slimvector_admission_accepted_total {admissionMetrics.Accepted}\n" +
+        $"slimvector_admission_contractual_rejections_total {admissionMetrics.ContractualRejections}\n" +
+        $"slimvector_admission_congestion_rejections_total {admissionMetrics.CongestionRejections}\n" +
+        $"slimvector_admission_adaptive_rate_ratio {admissionMetrics.AdaptiveRateRatio}\n" +
+        $"slimvector_admission_pressure {admissionMetrics.Pressure}\n";
 
     return Results.Text(body, "text/plain; version=0.0.4");
 });
 app.MapSlimVectorApi();
 app.MapBackupAdminApi();
+app.MapSlimVectorAdminApi();
 app.MapGeoReplicationEndpoint();
 app.Run();
+
+static string EscapePrometheusLabel(string value) => value
+    .Replace("\\", "\\\\", StringComparison.Ordinal)
+    .Replace("\n", "\\n", StringComparison.Ordinal)
+    .Replace("\"", "\\\"", StringComparison.Ordinal);
 
 static Task WriteTimeoutProblemAsync(HttpContext context)
 {

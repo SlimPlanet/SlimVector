@@ -9,6 +9,8 @@ x-cluster-environment: &cluster-environment
   Raft__MemberApiEndpoints__0: http://localhost:8081
   Raft__MemberApiEndpoints__1: http://localhost:8082
   Raft__MemberApiEndpoints__2: http://localhost:8083
+  Api__AdminEndpointsEnabled: "true"
+  Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
 
 services:
   node-1:
@@ -62,10 +64,35 @@ services:
       slimvector-cluster:
         ipv4_address: 172.28.0.13
 
+  node-4-joiner:
+    profiles: ["joiner"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8080"
+    environment:
+      Storage__Path: /data
+      Storage__FlushToDisk: "true"
+      Raft__Mode: Cluster
+      Raft__NodeId: node-4
+      Raft__PublicEndpoint: http://172.28.0.14:3262
+      Raft__PublicApiEndpoint: http://localhost:8084
+      Raft__JoinExistingCluster: "true"
+      Raft__DataGroupCount: "2"
+      Api__AdminEndpointsEnabled: "true"
+      Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
+    volumes:
+      - node-4-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.14
+
 volumes:
   node-1-data:
   node-2-data:
   node-3-data:
+  node-4-data:
 
 networks:
   slimvector-cluster:

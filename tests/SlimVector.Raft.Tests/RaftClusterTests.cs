@@ -12,6 +12,39 @@ public sealed class RaftClusterTests
 {
     private static readonly TimeSpan ElectionTimeout = TimeSpan.FromSeconds(15);
 
+    [Fact(Timeout = 30_000)]
+    public async Task MembershipCoordinatorRefusesRemovalBelowConfiguredQuorumFloor()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        using FileSystemStorageEngine storage = new(new StorageSettings
+        {
+            Path = Path.Combine(directory.Path, "application"),
+            FlushToDisk = false,
+        });
+        await storage.InitializeAsync(cancellationToken);
+        using StorageRaftCommandApplier applier = new(storage);
+        IPEndPoint[] endpoints = AllocateLoopbackEndpoints(2);
+        MultiRaftNode node = new(
+            [
+                Options(MultiRaftNode.CatalogGroupId, endpoints[0], [endpoints[0]], directory.Path, 0),
+                Options("data-0", endpoints[1], [endpoints[1]], directory.Path, 1),
+            ],
+            _ => applier);
+        await using DistributedConsensusCoordinator coordinator = new(node, applier);
+        await coordinator.StartAsync(cancellationToken);
+        await node.GetGroup(MultiRaftNode.CatalogGroupId).WaitForLeaderAsync(ElectionTimeout, cancellationToken);
+
+        DomainException failure = await Assert.ThrowsAsync<DomainException>(() => coordinator.RemoveMemberAsync(
+            MultiRaftNode.CatalogGroupId,
+            endpoints[0],
+            minimumVotingMembers: 1,
+            cancellationToken).AsTask());
+
+        Assert.Equal(ErrorCodes.MembershipConflict, failure.Code);
+        Assert.Single(node.GetGroup(MultiRaftNode.CatalogGroupId).GetMemberStatuses());
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ThreeNodesElectReplicateFailOverAndCatchUp()
     {
@@ -296,6 +329,97 @@ public sealed class RaftClusterTests
         }
     }
 
+    [Fact(Timeout = 90_000)]
+    public async Task NewMemberWarmsUpPersistsConfigurationRestartsAndCanBeRemoved()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        IPEndPoint[] endpoints = AllocateLoopbackEndpoints(4);
+        RecordingCommandApplier[] appliers = [new(), new(), new(), new()];
+        RaftGroupNode?[] nodes = new RaftGroupNode?[4];
+        for (int index = 0; index < 3; index++)
+        {
+            nodes[index] = CreateNode("catalog", endpoints[index], endpoints[..3], directory.Path, index, appliers[index]);
+        }
+
+        try
+        {
+            await Task.WhenAll(nodes[..3].Select(node => node!.StartAsync(cancellationToken).AsTask()));
+            EndPoint elected = await nodes[0]!.WaitForLeaderAsync(ElectionTimeout, cancellationToken);
+            RaftGroupNode leader = nodes[..3].Single(node => Equals(node!.LocalEndpoint, elected))!;
+            await WaitUntilAsync(() => leader.IsLeader, ElectionTimeout, cancellationToken);
+
+            for (int commandIndex = 0; commandIndex < 5; commandIndex++)
+            {
+                await leader.ReplicateAsync(CreateCatalogDelete(commandIndex), cancellationToken);
+            }
+
+            await WaitUntilAsync(
+                () => appliers[..3].All(static applier => applier.Commands.Count == 5),
+                ElectionTimeout,
+                cancellationToken);
+
+            nodes[3] = new RaftGroupNode(
+                Options("catalog", endpoints[3], [], directory.Path, 3) with { StartAsJoiningMember = true },
+                appliers[3]);
+            await nodes[3]!.StartAsync(cancellationToken);
+            Assert.Empty(nodes[3]!.GetMemberStatuses());
+
+            Assert.True(await leader.AddMemberAsync(endpoints[3], cancellationToken));
+            await WaitUntilAsync(
+                () => appliers[3].Commands.Count == 5 && nodes.All(node => node!.GetMemberStatuses().Count == 4),
+                ElectionTimeout,
+                cancellationToken);
+
+            await leader.ReplicateAsync(CreateCatalogDelete(5), cancellationToken);
+            await WaitUntilAsync(
+                () => appliers.All(static applier => applier.Commands.Count == 6),
+                ElectionTimeout,
+                cancellationToken);
+
+            await nodes[3]!.DisposeAsync();
+            nodes[3] = new RaftGroupNode(
+                Options("catalog", endpoints[3], [], directory.Path, 3) with { StartAsJoiningMember = true },
+                appliers[3]);
+            await nodes[3]!.StartAsync(cancellationToken);
+            await WaitUntilAsync(
+                () => nodes[3]!.GetMemberStatuses().Count == 4,
+                ElectionTimeout,
+                cancellationToken);
+
+            EndPoint restartedLeaderEndpoint = await nodes[0]!.WaitForLeaderAsync(ElectionTimeout, cancellationToken);
+            leader = nodes.Single(node => Equals(node!.LocalEndpoint, restartedLeaderEndpoint))!;
+            if (Equals(leader.LocalEndpoint, endpoints[3]))
+            {
+                Assert.True(await leader.TransferLeadershipAsync(cancellationToken));
+                await WaitUntilAsync(
+                    () => nodes[..3].Any(static node => node!.IsLeader),
+                    ElectionTimeout,
+                    cancellationToken);
+                leader = nodes[..3].Single(static node => node!.IsLeader)!;
+            }
+
+            Assert.True(await leader.RemoveMemberAsync(endpoints[3], cancellationToken));
+            await WaitUntilAsync(
+                () => nodes[..3].All(static node => node!.GetMemberStatuses().Count == 3),
+                ElectionTimeout,
+                cancellationToken);
+            Assert.DoesNotContain(
+                leader.GetMemberStatuses(),
+                status => string.Equals(status.Endpoint, endpoints[3].ToString(), StringComparison.Ordinal));
+        }
+        finally
+        {
+            foreach (RaftGroupNode? node in nodes)
+            {
+                if (node is not null)
+                {
+                    await node.DisposeAsync();
+                }
+            }
+        }
+    }
+
     private static RaftGroupNode CreateNode(
         string groupId,
         IPEndPoint endpoint,
@@ -322,7 +446,14 @@ public sealed class RaftClusterTests
             RequestTimeout = TimeSpan.FromSeconds(2),
             SnapshotEveryEntries = 1_000,
             TransmissionBlockSize = 4 * 1024,
+            WarmupRounds = 10,
         };
+
+    private static RaftCommandEnvelope CreateCatalogDelete(int commandIndex) => RaftCommandCodec.CatalogDelete(
+        Guid.Parse($"80000000-0000-0000-0000-{commandIndex + 1:D12}"),
+        "catalog",
+        Guid.Parse($"90000000-0000-0000-0000-{commandIndex + 1:D12}"),
+        $"dynamic-membership-{commandIndex}");
 
     private static IPEndPoint[] AllocateLoopbackEndpoints(int count)
     {

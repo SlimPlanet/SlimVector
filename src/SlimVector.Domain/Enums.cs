@@ -12,7 +12,19 @@ public enum VectorIndexKind
     Auto,
     Flat,
     Hnsw,
+    IvfFlat,
+    IvfPq,
+    DiskAnn,
 }
+
+#pragma warning disable CA1720 // Public configuration names intentionally match the standard scalar formats.
+public enum VectorQuantizationKind
+{
+    Float32,
+    Float16,
+    Int8,
+}
+#pragma warning restore CA1720
 
 public enum SearchMode
 {

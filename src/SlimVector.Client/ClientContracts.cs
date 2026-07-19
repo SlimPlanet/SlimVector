@@ -103,6 +103,50 @@ public sealed record BatchResult
     public required IReadOnlyList<MutationResult> Results { get; init; }
 }
 
+public sealed record IndexStatusInfo
+{
+    public required VectorIndexKind ActiveKind { get; init; }
+    public required long ActiveGeneration { get; init; }
+    public long? PreviousGeneration { get; init; }
+    public required string State { get; init; }
+    public string? Reason { get; init; }
+    public required DateTimeOffset LastMigration { get; init; }
+}
+
+public sealed record ClusterMembershipInfo
+{
+    public required IReadOnlyList<GroupMembershipInfo> Groups { get; init; }
+}
+
+public sealed record GroupMembershipInfo
+{
+    public required string GroupId { get; init; }
+    public string? ChangeState { get; init; }
+    public string? ChangeEndpoint { get; init; }
+    public required IReadOnlyList<RaftMemberInfo> Members { get; init; }
+}
+
+public sealed record RaftMemberInfo
+{
+    public required string Endpoint { get; init; }
+    public bool IsLeader { get; init; }
+    public bool IsRemote { get; init; }
+    public required string TransportStatus { get; init; }
+    public long? MatchIndex { get; init; }
+    public long? ReplicationLag { get; init; }
+}
+
+internal sealed record MembershipChange
+{
+    public required string GroupId { get; init; }
+    public string? Endpoint { get; init; }
+}
+
+internal sealed record AdminOperationInfo
+{
+    public required string Status { get; init; }
+}
+
 internal sealed record CollectionList
 {
     public required CollectionInfo[] Collections { get; init; }

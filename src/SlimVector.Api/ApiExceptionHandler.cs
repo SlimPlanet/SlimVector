@@ -36,8 +36,12 @@ internal sealed partial class ApiExceptionHandler : IExceptionHandler
         {
             DomainException domain when domain.Code is ErrorCodes.CollectionNotFound or ErrorCodes.DocumentNotFound =>
                 (StatusCodes.Status404NotFound, domain.Code, "Resource not found"),
+            DomainException domain when domain.Code == ErrorCodes.MembershipMemberNotFound =>
+                (StatusCodes.Status404NotFound, domain.Code, "Raft member or group not found"),
             DomainException domain when domain.Code is ErrorCodes.CollectionAlreadyExists or ErrorCodes.DocumentAlreadyExists =>
                 (StatusCodes.Status409Conflict, domain.Code, "Resource conflict"),
+            DomainException domain when domain.Code == ErrorCodes.MembershipConflict =>
+                (StatusCodes.Status409Conflict, domain.Code, "Unsafe or conflicting membership change"),
             DomainException domain when domain.Code == ErrorCodes.QueueSaturated =>
                 (StatusCodes.Status429TooManyRequests, domain.Code, "Service saturated"),
             DomainException domain when domain.Code == ErrorCodes.RequestTooLarge =>

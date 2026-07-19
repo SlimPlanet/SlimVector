@@ -2,6 +2,39 @@ using SlimVector.Domain;
 
 namespace SlimVector.Application.Configuration;
 
+public sealed class SlimVectorOptions
+{
+    public StorageOptions Storage { get; set; } = new();
+
+    public VectorIndexOptions VectorIndex { get; set; } = new();
+
+    public AutoIndexOptions AutoIndex { get; set; } = new();
+
+    public HnswOptions Hnsw { get; set; } = new();
+
+    public IvfOptions Ivf { get; set; } = new();
+
+    public PqOptions Pq { get; set; } = new();
+
+    public DiskAnnOptions DiskAnn { get; set; } = new();
+
+    public RaftOptions Raft { get; set; } = new();
+
+    public ClusterMembershipOptions ClusterMembership { get; set; } = new();
+
+    public AdaptiveBatchingOptions AdaptiveBatching { get; set; } = new();
+
+    public RateLimitOptions RateLimit { get; set; } = new();
+
+    public BackpressureOptions Backpressure { get; set; } = new();
+
+    public BackupOptions Backup { get; set; } = new();
+
+    public GeoReplicationOptions Geo { get; set; } = new();
+
+    public ObservabilityOptions Observability { get; set; } = new();
+}
+
 public sealed class StorageOptions
 {
     public const string SectionName = "Storage";
@@ -33,6 +66,94 @@ public sealed class VectorIndexOptions
     public int HybridCandidateMultiplier { get; set; } = 4;
 
     public int MaximumSearchLimit { get; set; } = 1_000;
+}
+
+public sealed class AutoIndexOptions
+{
+    public const string SectionName = "AutoIndex";
+
+    public bool Enabled { get; set; } = true;
+
+    public VectorIndexKind[] AllowedIndexes { get; set; } =
+        [VectorIndexKind.Flat, VectorIndexKind.Hnsw, VectorIndexKind.IvfFlat, VectorIndexKind.IvfPq, VectorIndexKind.DiskAnn];
+
+    public TimeSpan AssessmentInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+    public TimeSpan MinimumMigrationInterval { get; set; } = TimeSpan.FromMinutes(15);
+
+    public double HysteresisRatio { get; set; } = 0.20;
+
+    public double MinimumRecall { get; set; } = 0.90;
+
+    public double MinimumPerformanceGain { get; set; } = 0.10;
+
+    public int ValidationSampleSize { get; set; } = 64;
+
+    public int HnswMinimumVectors { get; set; } = 10_000;
+
+    public int IvfMinimumVectors { get; set; } = 100_000;
+
+    public int PqMinimumVectors { get; set; } = 500_000;
+
+    public double DiskAnnMemoryRatio { get; set; } = 0.60;
+
+    public double HighUpdateRatio { get; set; } = 0.10;
+}
+
+public sealed class HnswOptions
+{
+    public const string SectionName = "Hnsw";
+
+    public int M { get; set; } = 16;
+
+    public int EfConstruction { get; set; } = 200;
+
+    public int EfSearch { get; set; } = 64;
+}
+
+public sealed class IvfOptions
+{
+    public const string SectionName = "Ivf";
+
+    public int ListCount { get; set; } = 256;
+
+    public int ProbeCount { get; set; } = 8;
+
+    public int TrainingIterations { get; set; } = 20;
+}
+
+public sealed class PqOptions
+{
+    public const string SectionName = "PQ";
+
+    public int SubvectorCount { get; set; } = 8;
+
+    public int CentroidCount { get; set; } = 256;
+
+    public int TrainingIterations { get; set; } = 20;
+
+    public int RerankCandidateMultiplier { get; set; } = 4;
+}
+
+public sealed class DiskAnnOptions
+{
+    public const string SectionName = "DiskAnn";
+
+    public string Path { get; set; } = "data/indexes/diskann";
+
+    public int MaxDegree { get; set; } = 32;
+
+    public int SearchListSize { get; set; } = 64;
+
+    public int BeamWidth { get; set; } = 4;
+
+    public int DeltaThreshold { get; set; } = 10_000;
+
+    public int PageSize { get; set; } = 4_096;
+
+    public int CachePages { get; set; } = 256;
+
+    public int RetainedGenerations { get; set; } = 2;
 }
 
 public sealed class TextIndexOptions
@@ -71,6 +192,8 @@ public sealed class RaftOptions
 
     public string[] MemberApiEndpoints { get; set; } = [];
 
+    public bool JoinExistingCluster { get; set; }
+
     public int DataGroupCount { get; set; } = 2;
 
     public TimeSpan ElectionTimeout { get; set; } = TimeSpan.FromSeconds(2);
@@ -80,6 +203,25 @@ public sealed class RaftOptions
     public int SnapshotEveryEntries { get; set; } = 10_000;
 
     public int TransmissionBlockSize { get; set; } = 64 * 1024;
+}
+
+public sealed class ClusterMembershipOptions
+{
+    public const string SectionName = "ClusterMembership";
+
+    public bool Enabled { get; set; } = true;
+
+    public int WarmupRounds { get; set; } = 10;
+
+    public int MaximumCatchUpLagEntries { get; set; } = 100;
+
+    public int MinimumVotingMembers { get; set; } = 3;
+
+    public TimeSpan CatchUpTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    public TimeSpan OperationTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    public bool AutoPromote { get; set; }
 }
 
 public sealed class GeoReplicationOptions
@@ -143,6 +285,42 @@ public sealed class BackpressureOptions
     public int MaximumConcurrentWrites { get; set; } = Environment.ProcessorCount;
 
     public TimeSpan EnqueueTimeout { get; set; } = TimeSpan.FromSeconds(2);
+}
+
+public sealed class RateLimitOptions
+{
+    public const string SectionName = "RateLimit";
+
+    public bool Enabled { get; set; } = true;
+
+    public TokenBucketOptions Global { get; set; } = new() { TokensPerSecond = 20_000, BurstCapacity = 40_000 };
+
+    public TokenBucketOptions Client { get; set; } = new() { TokensPerSecond = 2_000, BurstCapacity = 4_000 };
+
+    public TokenBucketOptions Collection { get; set; } = new() { TokensPerSecond = 5_000, BurstCapacity = 10_000 };
+
+    public TokenBucketOptions Read { get; set; } = new() { TokensPerSecond = 15_000, BurstCapacity = 30_000 };
+
+    public TokenBucketOptions Write { get; set; } = new() { TokensPerSecond = 5_000, BurstCapacity = 10_000 };
+
+    public TokenBucketOptions Admin { get; set; } = new() { TokensPerSecond = 100, BurstCapacity = 200 };
+
+    public double ReservedReadFraction { get; set; } = 0.20;
+
+    public double ReservedWriteFraction { get; set; } = 0.10;
+
+    public TimeSpan IdleBucketExpiration { get; set; } = TimeSpan.FromMinutes(10);
+
+    public TimeSpan RecoveryWindow { get; set; } = TimeSpan.FromSeconds(30);
+
+    public double MinimumAdaptiveRateRatio { get; set; } = 0.10;
+}
+
+public sealed class TokenBucketOptions
+{
+    public double TokensPerSecond { get; set; }
+
+    public double BurstCapacity { get; set; }
 }
 
 public sealed class BackupOptions

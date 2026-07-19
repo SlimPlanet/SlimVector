@@ -24,15 +24,25 @@ public sealed record RaftGroupNodeOptions
 
     public int TransmissionBlockSize { get; init; } = 64 * 1024;
 
+    public int WarmupRounds { get; init; } = 10;
+
+    public int MaximumReplicationLag { get; init; } = 100;
+
+    public bool StartAsJoiningMember { get; init; }
+
     internal void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(GroupId);
         ArgumentNullException.ThrowIfNull(LocalEndpoint);
         ArgumentNullException.ThrowIfNull(Members);
         ArgumentException.ThrowIfNullOrWhiteSpace(StoragePath);
-        if (Members.Count == 0 || !Members.Contains(LocalEndpoint))
+        if (StartAsJoiningMember ? Members.Count != 0 : Members.Count == 0 || !Members.Contains(LocalEndpoint))
         {
-            throw new ArgumentException("Raft members must contain the local endpoint.", nameof(Members));
+            throw new ArgumentException(
+                StartAsJoiningMember
+                    ? "A joining Raft member must start without a locally seeded voting configuration."
+                    : "Raft members must contain the local endpoint.",
+                nameof(Members));
         }
 
         if (Members.Distinct().Count() != Members.Count)
@@ -53,6 +63,11 @@ public sealed record RaftGroupNodeOptions
         if (RequestTimeout <= TimeSpan.Zero || SnapshotEveryEntries < 1 || TransmissionBlockSize < 1_024)
         {
             throw new ArgumentException("Raft request, snapshot, and transmission settings must be positive.");
+        }
+
+        if (WarmupRounds < 1 || MaximumReplicationLag < 0)
+        {
+            throw new ArgumentException("Membership warmup rounds must be positive and replication lag may not be negative.");
         }
     }
 }

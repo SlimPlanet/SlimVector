@@ -5,7 +5,7 @@ using SlimVector.Indexing;
 namespace SlimVector.Benchmarks;
 
 [MemoryDiagnoser]
-public class HybridIndexBenchmarks
+public class HybridIndexBenchmarks : IDisposable
 {
     private CollectionSearchIndex _flat = null!;
     private CollectionSearchIndex _hnsw = null!;
@@ -85,4 +85,11 @@ public class HybridIndexBenchmarks
 
     [Benchmark]
     public IReadOnlyList<HybridRankedResult> FilteredHybrid() => _hnsw.Search(_hybrid, 4);
+
+    public void Dispose()
+    {
+        _flat?.Dispose();
+        _hnsw?.Dispose();
+        GC.SuppressFinalize(this);
+    }
 }

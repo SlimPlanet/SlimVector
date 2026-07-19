@@ -86,6 +86,11 @@ public sealed class MultiRaftNode : IAsyncDisposable
         ? group
         : throw new KeyNotFoundException($"Raft group '{groupId}' is not hosted by this node.");
 
+    public IReadOnlyList<ClusterMembershipStatus> GetMembershipStatuses() => _groups.Values
+        .OrderBy(static group => group.GroupId, StringComparer.Ordinal)
+        .Select(static group => new ClusterMembershipStatus(group.GroupId, group.GetMemberStatuses(), null, null))
+        .ToArray();
+
     public async ValueTask DisposeAsync()
     {
         foreach (RaftGroupNode group in _groups.Values)

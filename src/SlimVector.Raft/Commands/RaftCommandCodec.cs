@@ -101,6 +101,21 @@ public static class RaftCommandCodec
                 HnswM = collection.HnswM,
                 HnswEfConstruction = collection.HnswEfConstruction,
                 HnswEfSearch = collection.HnswEfSearch,
+                Quantization = collection.Quantization,
+                RerankCandidateMultiplier = PositiveOrDefault(collection.RerankCandidateMultiplier, 4),
+                IvfListCount = PositiveOrDefault(collection.IvfListCount, 256),
+                IvfProbeCount = PositiveOrDefault(collection.IvfProbeCount, 8),
+                IvfTrainingIterations = PositiveOrDefault(collection.IvfTrainingIterations, 20),
+                PqSubvectorCount = PositiveOrDefault(collection.PqSubvectorCount, 8),
+                PqCentroidCount = PositiveOrDefault(collection.PqCentroidCount, 256),
+                PqTrainingIterations = PositiveOrDefault(collection.PqTrainingIterations, 20),
+                DiskAnnMaxDegree = PositiveOrDefault(collection.DiskAnnMaxDegree, 32),
+                DiskAnnSearchListSize = PositiveOrDefault(collection.DiskAnnSearchListSize, 64),
+                DiskAnnBeamWidth = PositiveOrDefault(collection.DiskAnnBeamWidth, 4),
+                DiskAnnDeltaThreshold = PositiveOrDefault(collection.DiskAnnDeltaThreshold, 10_000),
+                DiskAnnPageSize = PositiveOrDefault(collection.DiskAnnPageSize, 4_096),
+                DiskAnnCachePages = PositiveOrDefault(collection.DiskAnnCachePages, 256),
+                DiskAnnRetainedGenerations = PositiveOrDefault(collection.DiskAnnRetainedGenerations, 2),
             },
             MetadataIndexed = collection.MetadataIndexed,
             CreatedAt = collection.CreatedAt,
@@ -108,7 +123,7 @@ public static class RaftCommandCodec
         };
         DomainValidation.ValidateCollectionName(result.Name);
         DomainValidation.ValidateDimension(result.Dimension);
-        DomainValidation.ValidateVectorIndex(result.VectorIndex);
+        DomainValidation.ValidateVectorIndex(result.VectorIndex, result.Dimension);
         return result;
     }
 
@@ -141,6 +156,21 @@ public static class RaftCommandCodec
             MetadataIndexed = collection.MetadataIndexed,
             CreatedAt = collection.CreatedAt,
             UpdatedAt = collection.UpdatedAt,
+            Quantization = collection.VectorIndex.Quantization,
+            RerankCandidateMultiplier = collection.VectorIndex.RerankCandidateMultiplier,
+            IvfListCount = collection.VectorIndex.IvfListCount,
+            IvfProbeCount = collection.VectorIndex.IvfProbeCount,
+            IvfTrainingIterations = collection.VectorIndex.IvfTrainingIterations,
+            PqSubvectorCount = collection.VectorIndex.PqSubvectorCount,
+            PqCentroidCount = collection.VectorIndex.PqCentroidCount,
+            PqTrainingIterations = collection.VectorIndex.PqTrainingIterations,
+            DiskAnnMaxDegree = collection.VectorIndex.DiskAnnMaxDegree,
+            DiskAnnSearchListSize = collection.VectorIndex.DiskAnnSearchListSize,
+            DiskAnnBeamWidth = collection.VectorIndex.DiskAnnBeamWidth,
+            DiskAnnDeltaThreshold = collection.VectorIndex.DiskAnnDeltaThreshold,
+            DiskAnnPageSize = collection.VectorIndex.DiskAnnPageSize,
+            DiskAnnCachePages = collection.VectorIndex.DiskAnnCachePages,
+            DiskAnnRetainedGenerations = collection.VectorIndex.DiskAnnRetainedGenerations,
         };
     }
 
@@ -215,6 +245,8 @@ public static class RaftCommandCodec
         IntegerArrayValue = value.IntegerArrayValue,
         NumberArrayValue = value.NumberArrayValue,
     };
+
+    private static int PositiveOrDefault(int value, int fallback) => value > 0 ? value : fallback;
 
     private static void Validate(RaftCommandEnvelope command)
     {

@@ -9,6 +9,36 @@ public sealed record VectorIndexConfiguration
     public int HnswEfConstruction { get; init; } = 200;
 
     public int HnswEfSearch { get; init; } = 64;
+
+    public VectorQuantizationKind Quantization { get; init; } = VectorQuantizationKind.Float32;
+
+    public int RerankCandidateMultiplier { get; init; } = 4;
+
+    public int IvfListCount { get; init; } = 256;
+
+    public int IvfProbeCount { get; init; } = 8;
+
+    public int IvfTrainingIterations { get; init; } = 20;
+
+    public int PqSubvectorCount { get; init; } = 8;
+
+    public int PqCentroidCount { get; init; } = 256;
+
+    public int PqTrainingIterations { get; init; } = 20;
+
+    public int DiskAnnMaxDegree { get; init; } = 32;
+
+    public int DiskAnnSearchListSize { get; init; } = 64;
+
+    public int DiskAnnBeamWidth { get; init; } = 4;
+
+    public int DiskAnnDeltaThreshold { get; init; } = 10_000;
+
+    public int DiskAnnPageSize { get; init; } = 4_096;
+
+    public int DiskAnnCachePages { get; init; } = 256;
+
+    public int DiskAnnRetainedGenerations { get; init; } = 2;
 }
 
 public sealed record CollectionDefinition
@@ -39,7 +69,7 @@ public sealed record CollectionDefinition
     {
         DomainValidation.ValidateCollectionName(name);
         DomainValidation.ValidateDimension(dimension);
-        DomainValidation.ValidateVectorIndex(vectorIndex ?? new VectorIndexConfiguration());
+        DomainValidation.ValidateVectorIndex(vectorIndex ?? new VectorIndexConfiguration(), dimension);
 
         DateTimeOffset now = (timeProvider ?? TimeProvider.System).GetUtcNow();
         return new CollectionDefinition

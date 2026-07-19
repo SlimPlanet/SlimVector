@@ -8,7 +8,7 @@ dotnet build SlimVector.slnx -c Release
 dotnet test SlimVector.slnx -c Release
 ```
 
-The test projects cover domain validation; SIMD distances; Flat/HNSW, BM25, metadata, rank fusion, and persisted index snapshots; immutable storage/crash reconciliation/compaction; application CRUD, lazy eviction, adaptive batching/backpressure, backup/S3/restore; actual multi-process TCP Raft elections, failover, catch-up, snapshot install, partitions, and multiple groups; geographic outage/restart/divergence; and HTTP/client/admin/redirect behavior.
+The test projects cover domain validation; SIMD Flat, HNSW, IVF-Flat, IVF-PQ, scalar quantization and SSD DiskANN persistence/recall/mutation/rollback; Auto selection, online migration, failed-candidate isolation and restart-safe rollback; BM25, metadata and hybrid fusion; immutable storage/crash reconciliation/compaction; CRUD, eviction, batching, backpressure and reserved/fair token buckets; backup/S3/restore; actual TCP Raft election/failover/snapshot/partition/multi-group plus fourth-member warm-up, restart and removal; geographic outage/restart/divergence; and HTTP/client/admin/429/redirect behavior.
 
 `SlimVector.DocIngestor.Tests` generates valid PDF, DOCX, and PPTX files in memory and verifies format routing, page/slide/heading provenance, bounded overlapping chunks, deterministic identifiers, and pipeline behavior. `SlimVector.Studio.Tests` starts the complete web host with an isolated database and deterministic test embedding generator; it exercises the static UI, automatic default collection, ingestion, all four search modes, manual mutations, runtime telemetry, and backup verification without downloading a model.
 
@@ -34,3 +34,14 @@ dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --filter '*A
 ```
 
 The suite includes allocation diagnostics and parameterized cases for exact/HNSW/text/metadata/hybrid queries, Raft MemoryPack serialization at multiple batch sizes, concurrent adaptive-scheduler throughput, and filesystem cold load at multiple collection sizes. Benchmark results are machine-specific and are not committed as product guarantees.
+
+Run reproducible measured end-to-end profiles with:
+
+```bash
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Smoke
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Standard --baseline artifacts/benchmarks/<run>/benchmark-results.json
+# Large is intentionally for a dedicated machine.
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Large
+```
+
+The runner measures all vector kinds and quantizations against exact recall, migration build, a real SlimVector HTTP process with vector/text/hybrid traffic plus concurrent reads/writes, controlled backpressure and rate-limit saturation, and a real four-node DotNext add/catch-up path. It samples CPU and working set, records idle/average/peak memory, managed-memory release after index disposal, GC/LOH/pause data, disk size/write rate, error rate, latency percentiles, throughput, recall, build/persist/cold-load timing, and the exact workload/index/admission configuration. Every versioned run writes `benchmark-summary.md`, HTML charts, CSV, JSON, and environment/version metadata under `artifacts/benchmarks`. Missing profiles are not synthesized; only an executed profile produces a report. A supplied baseline adds p95 regression percentages.

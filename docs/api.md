@@ -13,7 +13,7 @@ The default prefix is `/api/v1`; `Api:RoutePrefix` can change it. JSON uses came
 | `PATCH` | `/collections/{name}` | Rename or change vector-index settings |
 | `DELETE` | `/collections/{name}` | Delete a collection |
 
-Creation requires `name` and `dimension`; `metric` defaults to `cosine`, and vector index `kind` defaults to `auto`. Metrics are `cosine`, `dotProduct`, and `euclidean`; index kinds are `auto`, `flat`, and `hnsw`.
+Creation requires `name` and `dimension`; `metric` defaults to `cosine`, and vector index `kind` defaults to `auto`. Metrics are `cosine`, `dotProduct`, and `euclidean`; index kinds are `auto`, `flat`, `hnsw`, `ivfFlat`, `ivfPq`, and `diskAnn`. Scalar `quantization` is `float32`, `float16`, or `int8`. Requests can also set HNSW, IVF, PQ, rerank, and DiskANN degree/search/beam/delta/page/cache/retention fields; invalid combinations fail before catalog replication.
 
 ## Documents
 
@@ -43,7 +43,7 @@ Add and upsert accept a natural grouped envelope:
 }
 ```
 
-With `atomic=true` (the default), one invalid item rejects the entire request and nothing is persisted. With `atomic=false`, valid items commit and the response reports stable `errorCode`/`errorMessage` values for failed items. Admission saturation returns `429 queue_saturated`; a payload over the configured adaptive-batch byte limit returns `400 write_too_large`.
+With `atomic=true` (the default), one invalid item rejects the entire request and nothing is persisted. With `atomic=false`, valid items commit and the response reports stable `errorCode`/`errorMessage` values for failed items. Admission control returns 429 with `Retry-After`, `X-SlimVector-RateLimit-Kind` (`contractual` or `congestion`), and `X-SlimVector-RateLimit-Scope`. Queue saturation remains `queue_saturated`; a payload over the configured adaptive-batch byte limit returns `400 write_too_large`.
 
 Metadata values support null, string, boolean, integral and floating-point numbers, RFC-compatible date/time values, GUIDs, and simple arrays. JSON numbers without a fractional part are stored as integral values.
 
@@ -75,7 +75,7 @@ Filter operators are `equal`, `notEqual`, `greaterThan`, `greaterThanOrEqual`, `
 
 ## Errors and redirects
 
-Errors are RFC Problem Details with `code` and `traceId` extensions. Common stable codes include `collection_not_found`, `document_not_found`, `dimension_mismatch`, `invalid_filter`, `text_too_large`, `queue_saturated`, `request_too_large`, `not_leader`, `quorum_unavailable`, and `read_only_secondary`.
+Errors are RFC Problem Details with `code` and `traceId` extensions. Common stable codes include `collection_not_found`, `document_not_found`, `dimension_mismatch`, `invalid_filter`, `text_too_large`, `queue_saturated`, `request_too_large`, `not_leader`, `quorum_unavailable`, `membership_conflict`, `membership_member_not_found`, and `read_only_secondary`.
 
 A cluster follower returns `307 Temporary Redirect` for a leader-only write when the leader's API address is known. Clients must preserve method and body when following it; the provided .NET client uses `HttpClient`, which supports 307 redirects by default.
 
@@ -92,3 +92,20 @@ Backup endpoints are absent unless `Api:AdminEndpointsEnabled=true` and a key of
 | `POST` | `/admin/backups/{id}/restore-collection` | Restore a collection |
 
 The collection restore body is `{"collectionName":"source","restoredName":"copy","overwrite":false}`. Treat the administrator key as a secret and place these routes behind TLS and network access control.
+
+## Index and cluster administration
+
+These routes use the same administrator key:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/admin/collections/{name}/index` | Active/previous generation, kind and migration state/reason |
+| `POST` | `/admin/collections/{name}/index/rollback` | Atomically swap to the retained generation |
+| `GET` | `/admin/cluster/membership` | Groups, members, leader/transport/synchronization and active change |
+| `POST` | `/admin/cluster/membership/add` | Warm up and consensus-add one group endpoint |
+| `POST` | `/admin/cluster/membership/promote` | Verify safe catch-up/promotion completed |
+| `POST` | `/admin/cluster/membership/demote` | Stage a serialized safe removal |
+| `POST` | `/admin/cluster/membership/remove` | Consensus-remove after safety checks |
+| `POST` | `/admin/cluster/membership/transfer-leadership` | Resign the local group leader before maintenance |
+
+Membership bodies use `{"groupId":"data-0","endpoint":"10.0.0.14:3263"}`; leadership transfer needs only `groupId`. Perform topology changes for the catalog and every data group.

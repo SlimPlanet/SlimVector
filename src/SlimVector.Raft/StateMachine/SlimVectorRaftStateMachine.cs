@@ -70,6 +70,14 @@ internal sealed class SlimVectorRaftStateMachine : SimpleStateMachine
 
     protected override async ValueTask<bool> ApplyAsync(LogEntry entry, CancellationToken token)
     {
+        // Membership transitions append both a no-op barrier and a configuration entry.
+        // They advance the replicated log but are consumed by DotNext's configuration
+        // storage rather than by the SlimVector application command codec.
+        if (entry.IsConfiguration || entry.Length.GetValueOrDefault() == 0)
+        {
+            return false;
+        }
+
         if (!entry.TryGetPayload(out ReadOnlySequence<byte> payload))
         {
             throw new InvalidDataException($"Raft log entry {entry.Index} in group '{_groupId}' has no payload.");

@@ -63,6 +63,10 @@ public sealed class SlimVectorApiTests
             string metrics = await client.GetStringAsync("/metrics", cancellationToken);
             Assert.Contains("slimvector_search_requests_total 1", metrics, StringComparison.Ordinal);
             Assert.True(ReadMetric(metrics, "slimvector_index_loads_total") >= 1);
+            Assert.Contains("slimvector_index_active{collection=\"articles\"", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_index_persisted_snapshot_bytes{collection=\"articles\"", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_raft_member_match_index{group=\"catalog\"", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_raft_member_replication_lag{group=\"catalog\"", metrics, StringComparison.Ordinal);
         }
         finally
         {
@@ -238,6 +242,50 @@ public sealed class SlimVectorApiTests
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
             string body = await response.Content.ReadAsStringAsync(cancellationToken);
             Assert.Contains("collection_not_found", body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath))
+            {
+                Directory.Delete(dataPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RateLimitReturnsScopedProblemAndRetryAfter()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string dataPath = Path.Combine(Path.GetTempPath(), "SlimVector.Api.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(
+                builder => builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["Storage:Path"] = dataPath,
+                        ["Storage:FlushToDisk"] = "false",
+                        ["RateLimit:Global:TokensPerSecond"] = "1000",
+                        ["RateLimit:Global:BurstCapacity"] = "1000",
+                        ["RateLimit:Client:TokensPerSecond"] = "1",
+                        ["RateLimit:Client:BurstCapacity"] = "1",
+                        ["RateLimit:Read:TokensPerSecond"] = "1000",
+                        ["RateLimit:Read:BurstCapacity"] = "1000",
+                    })));
+            using HttpClient client = factory.CreateClient();
+            client.DefaultRequestHeaders.Add("X-SlimVector-Client-Id", "limited-client");
+            using HttpResponseMessage accepted = await client.GetAsync("/api/v1/collections", cancellationToken);
+            accepted.EnsureSuccessStatusCode();
+
+            using HttpResponseMessage rejected = await client.GetAsync("/api/v1/collections", cancellationToken);
+
+            Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+            Assert.NotNull(rejected.Headers.RetryAfter);
+            Assert.Equal("contractual", Assert.Single(rejected.Headers.GetValues("X-SlimVector-RateLimit-Kind")));
+            Assert.Equal("client", Assert.Single(rejected.Headers.GetValues("X-SlimVector-RateLimit-Scope")));
+            string problem = await rejected.Content.ReadAsStringAsync(cancellationToken);
+            Assert.Contains("retryAfterSeconds", problem, StringComparison.Ordinal);
+            Assert.Contains("rate_limited", problem, StringComparison.Ordinal);
         }
         finally
         {

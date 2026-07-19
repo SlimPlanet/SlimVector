@@ -29,6 +29,16 @@ public sealed class ConfigurationAndEvictionTests
             ["Raft:Members:0"] = "http://127.0.0.1:3262",
             ["Raft:Members:1"] = "http://127.0.0.2:3262",
             ["Raft:Members:2"] = "http://127.0.0.3:3262",
+            ["AutoIndex:MinimumRecall"] = "1.5",
+            ["Hnsw:M"] = "1",
+            ["Ivf:ListCount"] = "4",
+            ["Ivf:ProbeCount"] = "5",
+            ["PQ:CentroidCount"] = "1",
+            ["DiskAnn:PageSize"] = "1000",
+            ["ClusterMembership:OperationTimeout"] = "00:10:00",
+            ["ClusterMembership:CatchUpTimeout"] = "00:01:00",
+            ["RateLimit:ReservedReadFraction"] = "0.8",
+            ["RateLimit:ReservedWriteFraction"] = "0.3",
         });
         ServiceCollection services = new();
         services.AddSlimVector(configuration);
@@ -37,6 +47,13 @@ public sealed class ConfigurationAndEvictionTests
         Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<BackupOptions>>().Value);
         Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<GeoReplicationOptions>>().Value);
         Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<RaftOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<AutoIndexOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<HnswOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<IvfOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<PqOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<DiskAnnOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<ClusterMembershipOptions>>().Value);
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<RateLimitOptions>>().Value);
     }
 
     [Fact]

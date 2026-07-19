@@ -2,34 +2,53 @@
 
 ## Vector indexes
 
-Flat stores vectors contiguously and calculates cosine, dot-product, or Euclidean distance with `System.Numerics.Vector` acceleration. It performs exact search and maintains a bounded top-K heap, avoiding a full result sort.
+SlimVector keeps a collection whole on one Raft data group; it does not shard an individual collection. Every vector index implements the same mutation, filtered-search, persistence, and rebuild contract.
 
-HNSW is a deterministic hierarchical navigable small-world graph. Level selection derives from the document id, so replicas applying the same ordered commands produce the same graph. `HnswM`, `HnswEfConstruction`, and `HnswEfSearch` control connectivity, build recall, and query recall. Deletes mark graph nodes and entry points are repaired.
+| Kind | Search | Persistence and updates | Best fit |
+| --- | --- | --- | --- |
+| `flat` | Exact bounded top-K using `System.Numerics.Vector` for cosine, dot product, and L2 | Combined index snapshot; online upsert/delete | Small sets or exact recall |
+| `hnsw` | Deterministic multi-layer graph with configurable `M`, construction/search breadth | Persistent graph, logical deletes, deterministic rebuild | Read-heavy medium sets in RAM |
+| `ivfFlat` | Deterministic trained centroids, postings, configurable `nprobe` | Versioned centroid/posting snapshot; online delta mutations | Large sets where full vectors fit |
+| `ivfPq` | IVF over residual product-quantization codes, followed by exact reranking | Versioned IVF/PQ codebooks and codes | Large, memory-sensitive sets |
+| `diskAnn` | Vamana-style graph traversed from fixed SSD records with bounded beam/search list | Checksummed immutable generations, bounded LRU page cache, in-memory delta, merge threshold, rollback | Very large sets with limited RAM |
 
-`auto` uses Flat below `VectorIndex:AutoHnswThreshold` and HNSW at or above it. A threshold crossing rebuilds the effective vector index and persists the new combined snapshot.
+IVF training uses a fixed seed and deterministic ordering so replicas and repeatable benchmarks build equivalent codebooks. IVF-PQ requires `dimension % pqSubvectorCount == 0`. Approximate results should always be evaluated against Flat on a representative workload; `efSearch`, `nprobe`, rerank multiplier, and DiskANN search-list size exchange latency for recall.
 
-Distance values are lower-is-better internally. Dot product is represented as a distance transformation so the top-K machinery remains consistent.
+Scalar quantization is selected independently with `quantization: float32|float16|int8` where supported. Flat stores real Float16 or calibrated per-dimension Int8 candidate data and reranks a configurable candidate set with originals. IVF-PQ supplies its own compression. HNSW and IVF-Flat currently retain Float32 graph/posting vectors; asking for scalar quantization does not silently change their algorithm.
 
-## Text
+## Automatic index generations
 
-BM25 stores term frequencies, document lengths, postings, and corpus length. Tokenization is Unicode letter/digit based and lowercases invariantly. `TextIndex:Bm25K1` and `Bm25B` are applied to scoring. Documents exceeding `MaximumTermsPerDocument` are rejected before consensus/storage, preventing a post-commit indexing failure.
+`kind: auto` continuously assesses vector count and dimension, estimated resident memory versus available memory, read/update rates, deletion ratio, observed query latency, configured recall floor, SSD suitability, and rebuild scale. The allowed set, thresholds, high-churn penalty, memory ratio, and validation policy are typed under `AutoIndex`.
 
-## Metadata
+An online transition is generation based:
 
-Metadata is indexed by field existence, scalar equality key, and an ordered numeric/date structure. Array values contribute each scalar element. Comparisons apply to integral, floating-point, and date/time values; `in` unions equality postings. Boolean expression evaluation uses set intersection, union, and complement.
+1. keep the active index serving reads and writes;
+2. snapshot source documents and train/build a candidate off the request path;
+3. replay deletions and every current document into the candidate;
+4. compare count, sampled recall against exact Flat, and measured latency gain;
+5. write the generation snapshot, then atomically replace the checksummed manifest;
+6. retain and continuously update the previous generation for immediate rollback.
 
-When `MetadataIndex:IndexByDefault=false`, newly created collections store `MetadataIndexed=false`. Query semantics stay identical but filters scan their live document metadata. This is useful only for collections that rarely filter and should be chosen with the O(document count) cost understood.
+The manifest stores active/previous generation numbers and kinds. Both generations are restored after process restart, so rollback remains available after later writes. A failed or rejected candidate never replaces the active manifest. Hysteresis, minimum migration interval, minimum recall, and minimum performance gain prevent oscillation.
 
-The configured maximum expression depth is checked before evaluation. Equality is type-aware: integral `1`, floating-point `1.0`, text `"1"`, and boolean `true` are different keys.
+Inspect and roll back with the authenticated endpoints:
 
-## Hybrid fusion
+```bash
+curl -H "X-SlimVector-Admin-Key: $SLIMVECTOR_ADMIN_KEY" \
+  http://localhost:8080/api/v1/admin/collections/articles/index
 
-BM25 scores and vector distances have incompatible scales. SlimVector independently ranks candidates and applies weighted reciprocal-rank fusion. `vectorWeight` and `textWeight` are each between 0 and 1 and cannot both be zero. `VectorIndex:HybridCandidateMultiplier` controls how many candidates each side contributes before the final top-K is selected.
+curl -X POST -H "X-SlimVector-Admin-Key: $SLIMVECTOR_ADMIN_KEY" \
+  http://localhost:8080/api/v1/admin/collections/articles/index/rollback
+```
 
-## Filtering and candidates
+## Text, metadata, and hybrid fusion
 
-Filters run first and produce an id set. Flat, HNSW, and BM25 accept that set as a candidate constraint. Metadata-only mode returns the filtered ids directly in stable ordinal order. An omitted filter produces the set of all live ids.
+BM25 persists term frequencies, postings, document lengths, and corpus length. Unicode letter/digit tokenization and invariant casing are deterministic. `TextIndex:MaximumTermsPerDocument` rejects oversized documents before consensus.
 
-## Persistence and cold load
+Metadata uses existence and typed equality postings plus ordered numeric/date structures. Arrays contribute each scalar value; boolean expressions use posting intersection, union, and complement. With `MetadataIndex:IndexByDefault=false`, semantics remain correct through a document scan at O(document count).
 
-All four structures are written to `search-index-v1`. On cold load the document signature and settings must match exactly before the snapshot is used. Otherwise all structures are deterministically reconstructed from immutable segments. Metrics distinguish index loads, failures, Flat/HNSW loads, and HNSW cache hits/misses.
+Vector distance and BM25 score have different scales. Hybrid search ranks each independently and applies weighted reciprocal-rank fusion. Metadata filters produce a candidate id set first; every vector kind honors that constraint.
+
+## Derived-data recovery
+
+Combined snapshots include a document signature and settings. A stale/incompatible derived snapshot is rebuilt from source segments. Storage wrapper/checksum corruption is surfaced rather than hidden. DiskANN separately verifies generation headers and SHA-256 manifests. Source documents remain authoritative for every index.

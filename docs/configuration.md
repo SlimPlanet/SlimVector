@@ -1,54 +1,39 @@
 # Configuration
 
-SlimVector binds every section to a dedicated options type and validates it at startup. ASP.NET Core environment-variable syntax applies: replace `:` with `__`, for example `Storage__Path=/data`. Array indexes use `__0`, `__1`, and so on.
+Every section binds to a dedicated C# options type and is validated with `ValidateOnStart`. Environment variables replace `:` with `__`; arrays use numeric suffixes, for example `AutoIndex__AllowedIndexes__0=Hnsw`.
 
-## Sections
+Complete examples are [single-node appsettings](../src/SlimVector.Api/appsettings.json), [cluster appsettings](../config/appsettings.Cluster.example.json), and [evolving Compose cluster](../compose.cluster.yml).
 
-| Section | Important settings | Safe default |
-| --- | --- | --- |
-| `Storage` | `Path`, `FlushToDisk`, `MaximumSegmentsBeforeCompaction` | local `data`, fsync, 64 segments |
-| `Collections` | `IdleTimeout`, `EvictionSweepInterval`, `MaximumOpenCollections` | 15 min, 1 min, 128 |
-| `VectorIndex` | `AutoHnswThreshold`, `HybridCandidateMultiplier`, `MaximumSearchLimit` | 50,000, 4, 1,000 |
-| `TextIndex` | `Bm25K1`, `Bm25B`, `MaximumTermsPerDocument` | 1.2, 0.75, 100,000 |
-| `MetadataIndex` | `IndexByDefault`, `MaximumFilterDepth` | true, 32 |
-| `Raft` | mode, node/endpoints, members, groups, elections, snapshots | single-node |
-| `GeoReplication` | sender/receiver flags, mode, endpoint, secret, retry/outbox | disabled |
-| `AdaptiveBatching` | size/window/byte bounds | 1–256, 0–10 ms, 4 MiB |
-| `Backpressure` | global/client/collection/shard capacities and concurrency | bounded defaults |
-| `Backup` | schedule, provider, retention, encryption, S3 | disabled filesystem |
-| `Api` | prefix, batch/body limits, timeout, administrator routes/key | `/api/v1`, admin off |
-| `Observability` | metrics, structured logging, service name, slow-query threshold | enabled metrics, 500 ms |
+| Section | Controls |
+| --- | --- |
+| `Storage`, `Collections` | durable root/fsync/compaction; lazy-open idle timeout, sweep, open limit |
+| `VectorIndex` | hybrid candidate multiplier, search limit, legacy Auto threshold |
+| `AutoIndex` | allowed kinds, assessment/migration intervals, hysteresis, recall/gain floors, validation sample, size/memory/churn thresholds |
+| `Hnsw` | `M`, `EfConstruction`, `EfSearch` defaults for new collections |
+| `Ivf` | list/probe counts and deterministic training iterations |
+| `PQ` | subvectors, centroids, iterations, exact-rerank multiplier |
+| `DiskAnn` | artifact path, degree/search/beam, delta merge, page/cache sizes, retained generations |
+| `TextIndex`, `MetadataIndex` | BM25 limits/scoring and filter indexing/depth |
+| `Raft`, `ClusterMembership` | bootstrap or joining mode, group count, election/snapshot/transport, warm-up/lag/timeouts/minimum voters |
+| `AdaptiveBatching`, `Backpressure` | bounded command/byte/window targets, global/client/collection/group queues and concurrency |
+| `RateLimit` | global/client/collection/read/write/admin token buckets, reserved read/write fractions, adaptive recovery |
+| `Backup`, `GeoReplication` | provider/schedule/retention/encryption/S3; separate signed DR outbox/receiver |
+| `Api`, `Observability` | prefix/body/batch/timeout/admin auth; metrics/logging/slow-query threshold |
 
-The complete single-node example is [appsettings.json](../src/SlimVector.Api/appsettings.json); [compose.cluster.yml](../compose.cluster.yml) is the complete three-node override.
+The HNSW/IVF/PQ/DiskANN sections populate a new collection's configuration when `vectorIndex` is omitted. An explicitly supplied collection configuration is stored in the catalog and remains authoritative across restart.
 
-`MetadataIndex:IndexByDefault=false` marks newly created collections as unindexed for metadata. Filters remain correct through an explicit document scan, but broad filters cost O(document count) and the metadata derived snapshot remains empty. Existing collection definitions retain their stored setting.
+## Bootstrap versus join mode
 
-## Critical validation
+Initial cluster voters set `Raft:JoinExistingCluster=false` and provide at least three unique `Members` plus matching `MemberApiEndpoints`, including the local endpoint. A new server sets `JoinExistingCluster=true` with both arrays empty. It starts non-voting and is installed into each group only through the authenticated membership API and Raft consensus.
 
-Startup is refused when, among other cases:
+Critical startup failures include invalid/duplicate topology, missing local or API mappings, exhausted port offsets, bad election/heartbeat ratios, empty Auto allowed sets, non-divisible fixed IVF-PQ dimensions, invalid DiskANN page/cache/retention bounds, inconsistent queue/token reserves, unsafe timeouts, weak administrator/geo secrets, invalid backup encryption keys, and incomplete S3 credentials.
 
-- a cluster has fewer than three unique IP endpoints, omits the local endpoint, or lacks one valid public API mapping per member;
-- consecutive group ports would exceed the TCP range, or election time is not more than twice the heartbeat interval;
-- geographic replication lacks an absolute secondary URI or a 32-character shared secret;
-- S3 lacks endpoint, bucket, access key, or secret key;
-- backup encryption lacks a base64-encoded 256-bit key;
-- administrator routes are enabled with a key shorter than 32 characters;
-- any queue, timeout, batch, request, index, or retention bound is inconsistent.
+## Rate and congestion policy
 
-## Production secrets
+Normal limits are token buckets at four scopes: global, client/API key, collection, and operation. The global pool is divided into shared, read-reserved, and write-reserved capacity; administrative requests use their separately bounded bucket and are not blocked by data-plane congestion. Adaptive refill drops immediately under queue, memory, Raft lag/quorum, or error pressure and recovers gradually over `RecoveryWindow`.
 
-Do not commit `GeoReplication:SharedSecret`, `Backup:EncryptionKey`, S3 credentials, or `Api:AdminApiKey`. Inject them through your orchestrator's secret store. Use independent geo and admin secrets. Rotate a geo secret by coordinating sender and receiver because events signed with the old secret will be rejected.
+A contractual limit and congestion refusal are distinct 429 responses. Both include `Retry-After`; `X-SlimVector-RateLimit-Kind` is `contractual` or `congestion`, and the scope/reason is returned separately.
 
-Generate a backup encryption key with:
+## Secrets
 
-```bash
-openssl rand -base64 32
-```
-
-Changing that key makes existing encrypted backups unreadable unless the old key is retained for restore.
-
-## Port allocation
-
-`Raft:PublicEndpoint` is the catalog group's base TCP address. Data group `n` listens on base port `n + 1`. With base `3262` and two data groups, expose 3262, 3263, and 3264. `Raft:Members` contains base endpoints; SlimVector applies the same deterministic offset on every node.
-
-`Raft:MemberApiEndpoints` are client-visible redirect addresses, not Raft transport addresses. In Kubernetes these should be stable ingress/service URLs; in the supplied Compose file they are host ports 8081–8083.
+Do not commit `Api:AdminApiKey`, `GeoReplication:SharedSecret`, backup encryption keys, or S3 credentials. Inject them with an orchestrator secret store. Administrator and geo secrets must be independent. Generate a backup AES-256 key with `openssl rand -base64 32` and retain old keys for the lifetime of backups encrypted with them.

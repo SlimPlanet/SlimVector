@@ -18,8 +18,15 @@ public sealed class OperationalMetrics
     private long _indexedDocumentsLoaded;
     private long _flatIndexLoads;
     private long _hnswIndexLoads;
+    private long _ivfFlatIndexLoads;
+    private long _ivfPqIndexLoads;
+    private long _diskAnnIndexLoads;
     private long _hnswCacheHits;
     private long _hnswCacheMisses;
+    private long _indexMigrations;
+    private long _indexMigrationFailures;
+    private long _indexMigrationMicroseconds;
+    private long _lastIndexMigrationRecallMillionths;
 
     public void RecordSearch(SearchMode mode, TimeSpan elapsed, bool succeeded, bool slow)
     {
@@ -70,21 +77,34 @@ public sealed class OperationalMetrics
         }
 
         Interlocked.Add(ref _indexedDocumentsLoaded, documentCount);
-        if (kind == VectorIndexKind.Hnsw)
+        switch (kind)
         {
-            Interlocked.Increment(ref _hnswIndexLoads);
-            if (hnswCacheAvailable)
-            {
-                Interlocked.Increment(ref _hnswCacheHits);
-            }
-            else
-            {
-                Interlocked.Increment(ref _hnswCacheMisses);
-            }
-        }
-        else
-        {
-            Interlocked.Increment(ref _flatIndexLoads);
+            case VectorIndexKind.Hnsw:
+                Interlocked.Increment(ref _hnswIndexLoads);
+                if (hnswCacheAvailable)
+                {
+                    Interlocked.Increment(ref _hnswCacheHits);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _hnswCacheMisses);
+                }
+
+                break;
+            case VectorIndexKind.IvfFlat:
+                Interlocked.Increment(ref _ivfFlatIndexLoads);
+                break;
+            case VectorIndexKind.IvfPq:
+                Interlocked.Increment(ref _ivfPqIndexLoads);
+                break;
+            case VectorIndexKind.DiskAnn:
+                Interlocked.Increment(ref _diskAnnIndexLoads);
+                break;
+            case VectorIndexKind.Auto:
+            case VectorIndexKind.Flat:
+            default:
+                Interlocked.Increment(ref _flatIndexLoads);
+                break;
         }
     }
 
@@ -104,9 +124,30 @@ public sealed class OperationalMetrics
         IndexedDocumentsLoaded = Volatile.Read(ref _indexedDocumentsLoaded),
         FlatIndexLoads = Volatile.Read(ref _flatIndexLoads),
         HnswIndexLoads = Volatile.Read(ref _hnswIndexLoads),
+        IvfFlatIndexLoads = Volatile.Read(ref _ivfFlatIndexLoads),
+        IvfPqIndexLoads = Volatile.Read(ref _ivfPqIndexLoads),
+        DiskAnnIndexLoads = Volatile.Read(ref _diskAnnIndexLoads),
         HnswCacheHits = Volatile.Read(ref _hnswCacheHits),
         HnswCacheMisses = Volatile.Read(ref _hnswCacheMisses),
+        IndexMigrations = Volatile.Read(ref _indexMigrations),
+        IndexMigrationFailures = Volatile.Read(ref _indexMigrationFailures),
+        IndexMigrationMicroseconds = Volatile.Read(ref _indexMigrationMicroseconds),
+        LastIndexMigrationRecall = Volatile.Read(ref _lastIndexMigrationRecallMillionths) / 1_000_000D,
     };
+
+    public void RecordIndexMigration(TimeSpan elapsed, bool succeeded, double recall)
+    {
+        Interlocked.Increment(ref _indexMigrations);
+        Interlocked.Add(ref _indexMigrationMicroseconds, ToMicroseconds(elapsed));
+        if (!succeeded)
+        {
+            Interlocked.Increment(ref _indexMigrationFailures);
+        }
+
+        Interlocked.Exchange(
+            ref _lastIndexMigrationRecallMillionths,
+            (long)(Math.Clamp(recall, 0, 1) * 1_000_000));
+    }
 
     private static long ToMicroseconds(TimeSpan elapsed) =>
         (long)Math.Min(long.MaxValue, Math.Max(0, elapsed.TotalMicroseconds));
@@ -142,7 +183,21 @@ public sealed record OperationalMetricsSnapshot
 
     public required long HnswIndexLoads { get; init; }
 
+    public required long IvfFlatIndexLoads { get; init; }
+
+    public required long IvfPqIndexLoads { get; init; }
+
+    public required long DiskAnnIndexLoads { get; init; }
+
     public required long HnswCacheHits { get; init; }
 
     public required long HnswCacheMisses { get; init; }
+
+    public required long IndexMigrations { get; init; }
+
+    public required long IndexMigrationFailures { get; init; }
+
+    public required long IndexMigrationMicroseconds { get; init; }
+
+    public required double LastIndexMigrationRecall { get; init; }
 }

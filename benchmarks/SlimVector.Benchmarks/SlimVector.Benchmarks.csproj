@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/SlimVector.Application/SlimVector.Application.csproj" />
+    <ProjectReference Include="../../src/SlimVector.Api/SlimVector.Api.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../src/SlimVector.Indexing/SlimVector.Indexing.csproj" />
     <ProjectReference Include="../../src/SlimVector.Raft/SlimVector.Raft.csproj" />
     <ProjectReference Include="../../src/SlimVector.Storage/SlimVector.Storage.csproj" />

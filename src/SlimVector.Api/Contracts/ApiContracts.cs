@@ -218,6 +218,64 @@ public sealed record BackupListResponse
     public required IReadOnlyList<BackupResponse> Backups { get; init; }
 }
 
+public sealed record IndexMigrationResponse
+{
+    public required VectorIndexKind ActiveKind { get; init; }
+
+    public required long ActiveGeneration { get; init; }
+
+    public long? PreviousGeneration { get; init; }
+
+    public required string State { get; init; }
+
+    public string? Reason { get; init; }
+
+    public required DateTimeOffset LastMigration { get; init; }
+}
+
+public sealed record MembershipChangeRequest
+{
+    public required string GroupId { get; init; }
+
+    public string? Endpoint { get; init; }
+}
+
+public sealed record RaftMemberResponse
+{
+    public required string Endpoint { get; init; }
+
+    public required bool IsLeader { get; init; }
+
+    public required bool IsRemote { get; init; }
+
+    public required string TransportStatus { get; init; }
+
+    public long? MatchIndex { get; init; }
+
+    public long? ReplicationLag { get; init; }
+}
+
+public sealed record GroupMembershipResponse
+{
+    public required string GroupId { get; init; }
+
+    public required IReadOnlyList<RaftMemberResponse> Members { get; init; }
+
+    public string? ChangeState { get; init; }
+
+    public string? ChangeEndpoint { get; init; }
+}
+
+public sealed record ClusterMembershipResponse
+{
+    public required IReadOnlyList<GroupMembershipResponse> Groups { get; init; }
+}
+
+public sealed record AdminOperationResponse
+{
+    public required string Status { get; init; }
+}
+
 public sealed record BackupOperationResponse
 {
     public required string Status { get; init; }

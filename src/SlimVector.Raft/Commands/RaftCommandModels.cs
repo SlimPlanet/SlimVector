@@ -87,6 +87,36 @@ public sealed partial class RaftCollectionDefinition
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    public VectorQuantizationKind Quantization { get; set; }
+
+    public int RerankCandidateMultiplier { get; set; }
+
+    public int IvfListCount { get; set; }
+
+    public int IvfProbeCount { get; set; }
+
+    public int IvfTrainingIterations { get; set; }
+
+    public int PqSubvectorCount { get; set; }
+
+    public int PqCentroidCount { get; set; }
+
+    public int PqTrainingIterations { get; set; }
+
+    public int DiskAnnMaxDegree { get; set; }
+
+    public int DiskAnnSearchListSize { get; set; }
+
+    public int DiskAnnBeamWidth { get; set; }
+
+    public int DiskAnnDeltaThreshold { get; set; }
+
+    public int DiskAnnPageSize { get; set; }
+
+    public int DiskAnnCachePages { get; set; }
+
+    public int DiskAnnRetainedGenerations { get; set; }
 }
 
 [MemoryPackable]

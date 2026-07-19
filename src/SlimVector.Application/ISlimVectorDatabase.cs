@@ -1,3 +1,4 @@
+using SlimVector.Application.Indexes;
 using SlimVector.Domain;
 
 namespace SlimVector.Application;
@@ -53,7 +54,17 @@ public interface ISlimVectorDatabase
         SearchRequest request,
         CancellationToken cancellationToken = default);
 
+    ValueTask<IndexMigrationStatus> GetIndexStatusAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<bool> RollbackIndexAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default);
+
     ValueTask<int> EvictInactiveCollectionsAsync(CancellationToken cancellationToken = default);
+
+    IReadOnlyList<IndexRuntimeMetrics> GetOpenIndexMetrics();
 
     int OpenCollectionCount { get; }
 }

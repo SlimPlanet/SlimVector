@@ -14,9 +14,9 @@ Important series include:
 
 - collections and memory: `slimvector_open_collections`, `slimvector_managed_memory_bytes`;
 - search: request/failure/slow totals, mode totals, cumulative duration;
-- indexes: load/failure totals, load duration, loaded documents, Flat/HNSW loads, HNSW cache hits/misses;
+- indexes: load/failure totals, duration/documents and per-kind loads, migration attempts/failures/duration and last sampled recall; each open collection also exposes active kind/state, document count, estimated resident bytes, and persisted snapshot bytes;
 - admission/batching: queue depth, request/completion/rejection totals, batches/items, per-shard target size, window, payload, and replication latency;
-- Raft: leader flag, term, committed/applied indexes, applied commands per group;
+- Raft: leader flag, term, committed/applied indexes, applied commands, member count and membership-change state; per-member info includes endpoint/transport/leader/remote labels plus match index and observable replication lag;
 - geo: pending/sent/failure/received/duplicate/divergence totals and lag seconds;
 - backup/restore: successful/failed totals and deduplicated blobs.
 
@@ -33,7 +33,7 @@ Configure JSON console formatting in the host/orchestrator when `StructuredConso
 ## Saturation diagnosis
 
 1. Compare global and per-shard queue depth with configured capacities.
-2. Check rejection growth to distinguish admission saturation from client cancellation.
+2. Compare contractual and congestion rejection counters, adaptive-rate ratio, and the pressure reason in structured 429 logs.
 3. Inspect target batch size/window and last replication latency. A large target with growing latency points at consensus/storage throughput; a small target with high queue depth can indicate payload or memory pressure.
 4. Compare Raft commit/applied indexes and leader stability.
 5. Check managed memory and open collection count; shorten idle timeout only if cold-load cost is acceptable.

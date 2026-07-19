@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Writes;
@@ -26,18 +27,32 @@ public static class ServiceCollectionExtensions
         services.AddOptions<CollectionsOptions>().Bind(configuration.GetSection(CollectionsOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<VectorIndexOptions>, VectorIndexOptionsValidator>();
         services.AddOptions<VectorIndexOptions>().Bind(configuration.GetSection(VectorIndexOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<AutoIndexOptions>, AutoIndexOptionsValidator>();
+        services.AddOptions<AutoIndexOptions>().Bind(configuration.GetSection(AutoIndexOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<HnswOptions>, HnswOptionsValidator>();
+        services.AddOptions<HnswOptions>().Bind(configuration.GetSection(HnswOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<IvfOptions>, IvfOptionsValidator>();
+        services.AddOptions<IvfOptions>().Bind(configuration.GetSection(IvfOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<PqOptions>, PqOptionsValidator>();
+        services.AddOptions<PqOptions>().Bind(configuration.GetSection(PqOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<DiskAnnOptions>, DiskAnnOptionsValidator>();
+        services.AddOptions<DiskAnnOptions>().Bind(configuration.GetSection(DiskAnnOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<TextIndexOptions>, TextIndexOptionsValidator>();
         services.AddOptions<TextIndexOptions>().Bind(configuration.GetSection(TextIndexOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<MetadataIndexOptions>, MetadataIndexOptionsValidator>();
         services.AddOptions<MetadataIndexOptions>().Bind(configuration.GetSection(MetadataIndexOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<RaftOptions>, RaftOptionsValidator>();
         services.AddOptions<RaftOptions>().Bind(configuration.GetSection(RaftOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<ClusterMembershipOptions>, ClusterMembershipOptionsValidator>();
+        services.AddOptions<ClusterMembershipOptions>().Bind(configuration.GetSection(ClusterMembershipOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<GeoReplicationOptions>, GeoReplicationOptionsValidator>();
         services.AddOptions<GeoReplicationOptions>().Bind(configuration.GetSection(GeoReplicationOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<AdaptiveBatchingOptions>, AdaptiveBatchingOptionsValidator>();
         services.AddOptions<AdaptiveBatchingOptions>().Bind(configuration.GetSection(AdaptiveBatchingOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<BackpressureOptions>, BackpressureOptionsValidator>();
         services.AddOptions<BackpressureOptions>().Bind(configuration.GetSection(BackpressureOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<RateLimitOptions>, RateLimitOptionsValidator>();
+        services.AddOptions<RateLimitOptions>().Bind(configuration.GetSection(RateLimitOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<BackupOptions>, BackupOptionsValidator>();
         services.AddOptions<BackupOptions>().Bind(configuration.GetSection(BackupOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<ApiOptions>, ApiOptionsValidator>();
@@ -69,8 +84,12 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton(provider => new ConsensusCoordinatorHolder(CreateConsensusCoordinator(
             provider.GetRequiredService<IOptions<RaftOptions>>().Value,
+            provider.GetRequiredService<IOptions<ClusterMembershipOptions>>().Value,
             provider.GetRequiredService<IOptions<StorageOptions>>().Value,
             provider.GetRequiredService<StorageRaftCommandApplier>())));
+        services.AddSingleton<IClusterMembershipCoordinator>(provider =>
+            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local as IClusterMembershipCoordinator ??
+            new SingleNodeMembershipCoordinator());
         services.AddHttpClient("SlimVector.GeoReplication");
         services.AddSingleton<IGeoReplicationService>(provider => new GeoReplicationService(
             CreateGeoReplicationSettings(provider.GetRequiredService<IOptions<GeoReplicationOptions>>().Value),
@@ -83,6 +102,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<ConsensusCoordinatorHolder>().Local,
             provider.GetRequiredService<IGeoReplicationService>()));
         services.AddSingleton<IWriteScheduler, AdaptiveWriteScheduler>();
+        services.AddSingleton<IAdmissionController, AdaptiveAdmissionController>();
         services.AddHttpClient("SlimVector.Backup.S3");
         services.AddSingleton<IBackupService, BackupService>();
         services.AddSingleton<ISlimVectorDatabase, SlimVectorDatabase>();
@@ -93,6 +113,7 @@ public static class ServiceCollectionExtensions
 
     private static IConsensusCoordinator CreateConsensusCoordinator(
         RaftOptions options,
+        ClusterMembershipOptions membershipOptions,
         StorageOptions storageOptions,
         StorageRaftCommandApplier applier)
     {
@@ -140,6 +161,9 @@ public static class ServiceCollectionExtensions
             RequestTimeout = options.ElectionTimeout * 2,
             SnapshotEveryEntries = options.SnapshotEveryEntries,
             TransmissionBlockSize = options.TransmissionBlockSize,
+            WarmupRounds = membershipOptions.WarmupRounds,
+            MaximumReplicationLag = membershipOptions.MaximumCatchUpLagEntries,
+            StartAsJoiningMember = options.JoinExistingCluster,
         }).ToArray();
         MultiRaftNode node = new(groupOptions, _ => applier);
         return new DistributedConsensusCoordinator(node, applier);
