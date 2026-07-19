@@ -20,6 +20,17 @@ internal static class EndToEndBenchmarkRunner
     public static async Task<int> RunAsync(string[] args)
     {
         BenchmarkProfile profile = ParseProfile(GetArgument(args, "--profile") ?? "Smoke");
+        if (GetArgument(args, "--operation-count") is { } operationCountArgument)
+        {
+            if (!int.TryParse(operationCountArgument, NumberStyles.None, CultureInfo.InvariantCulture, out int operationCount) ||
+                operationCount < 1)
+            {
+                throw new ArgumentException("--operation-count must be a positive integer.", nameof(args));
+            }
+
+            profile = profile with { OperationCount = operationCount };
+        }
+
         string outputRoot = Path.GetFullPath(GetArgument(args, "--output") ?? "artifacts/benchmarks");
         string? baselinePath = GetArgument(args, "--baseline");
         double regressionThreshold = double.Parse(
@@ -55,7 +66,7 @@ internal static class EndToEndBenchmarkRunner
             results.Add(await RunRaftCatchUpScenarioAsync(profile, workspace).ConfigureAwait(false));
             BenchmarkRun run = new()
             {
-                SchemaVersion = 3,
+                SchemaVersion = 4,
                 Environment = environment,
                 Results = results,
                 Baseline = LoadBaseline(baselinePath),
@@ -85,10 +96,10 @@ internal static class EndToEndBenchmarkRunner
         string artifactPath = Path.Combine(workspace, scenario.Name.ToLowerInvariant().Replace('-', '_'));
         Directory.CreateDirectory(artifactPath);
         Process process = Process.GetCurrentProcess();
+        long managedBefore = GC.GetTotalMemory(forceFullCollection: true);
         process.Refresh();
         TimeSpan cpuBefore = process.TotalProcessorTime;
         long workingSetBefore = process.WorkingSet64;
-        long managedBefore = GC.GetTotalMemory(forceFullCollection: true);
         int gen0Before = GC.CollectionCount(0);
         int gen1Before = GC.CollectionCount(1);
         int gen2Before = GC.CollectionCount(2);
@@ -98,84 +109,172 @@ internal static class EndToEndBenchmarkRunner
         {
             using ResourceSampler resources = new(process);
             CollectionDefinition definition = Definition(profile, scenario);
-            Stopwatch build = Stopwatch.StartNew();
-            using CollectionSearchIndex index = new(
-                definition,
-                scenario.Kind,
-                documents,
-                persistedVectorIndex: null,
-                diskAnnArtifactDirectory: artifactPath);
-            build.Stop();
-            SearchRequest warmup = new() { Mode = SearchMode.Vector, Vector = queries[0], Limit = profile.TopK };
-            _ = index.Search(warmup, 4);
-            List<double> latencies = new(queries.Length);
-            double recall = 0;
-            Stopwatch searchWall = Stopwatch.StartNew();
-            for (int queryIndex = 0; queryIndex < queries.Length; queryIndex++)
+            List<OperationBenchmarkResult> operations = [];
+            CollectionSearchIndex index;
+            using (OperationMeasurement buildMeasurement = new("IndexBuild", documents.Length, process, artifactPath))
             {
-                SearchRequest request = new() { Mode = SearchMode.Vector, Vector = queries[queryIndex], Limit = profile.TopK };
-                long started = Stopwatch.GetTimestamp();
-                IReadOnlyList<HybridRankedResult> found = index.Search(request, 4);
-                latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-                recall += found.Count(result => truth[queryIndex].Contains(result.Id)) / (double)profile.TopK;
+                index = new CollectionSearchIndex(
+                    definition,
+                    scenario.Kind,
+                    documents,
+                    persistedVectorIndex: null,
+                    diskAnnArtifactDirectory: artifactPath);
+                operations.Add(buildMeasurement.Complete());
             }
 
-            searchWall.Stop();
-            Stopwatch persist = Stopwatch.StartNew();
-            byte[] snapshot = index.Serialize(documents);
-            persist.Stop();
-            Stopwatch coldLoad = Stopwatch.StartNew();
-            using CollectionSearchIndex restored = new(
-                definition,
-                scenario.Kind,
-                documents,
-                snapshot,
-                diskAnnArtifactDirectory: artifactPath + "-restored");
-            coldLoad.Stop();
-            long managedBeforeDispose = GC.GetTotalMemory(forceFullCollection: false);
-            restored.Dispose();
-            index.Dispose();
-            long managedAfterDispose = GC.GetTotalMemory(forceFullCollection: true);
-            resources.Stop();
-            process.Refresh();
-            TimeSpan cpuAfter = process.TotalProcessorTime;
-            long diskBytes = DirectorySize(artifactPath) + snapshot.LongLength;
-            return new EndToEndBenchmarkResult
+            using (index)
             {
-                Scenario = scenario.Name,
-                IndexKind = scenario.Kind.ToString(),
-                Quantization = scenario.Quantization.ToString(),
-                VectorCount = documents.Length,
-                Dimension = profile.Dimension,
-                BuildMilliseconds = build.Elapsed.TotalMilliseconds,
-                PersistMilliseconds = persist.Elapsed.TotalMilliseconds,
-                ColdLoadMilliseconds = coldLoad.Elapsed.TotalMilliseconds,
-                ThroughputQueriesPerSecond = queries.Length / searchWall.Elapsed.TotalSeconds,
-                P50Milliseconds = Percentile(latencies, 0.50),
-                P95Milliseconds = Percentile(latencies, 0.95),
-                P99Milliseconds = Percentile(latencies, 0.99),
-                RecallAtK = recall / queries.Length,
-                CpuSeconds = (cpuAfter - cpuBefore).TotalSeconds,
-                CpuUtilization = resources.AverageCpuUtilization,
-                PeakCpuUtilization = resources.PeakCpuUtilization,
-                ManagedBytesDelta = GC.GetTotalMemory(forceFullCollection: false) - managedBefore,
-                WorkingSetBytesDelta = process.WorkingSet64 - workingSetBefore,
-                AverageWorkingSetBytes = resources.AverageWorkingSetBytes,
-                PeakWorkingSetBytes = resources.PeakWorkingSetBytes,
-                ManagedBytesFreedAfterDispose = Math.Max(0, managedBeforeDispose - managedAfterDispose),
-                DiskBytes = diskBytes,
-                SnapshotBytes = snapshot.LongLength,
-                DiskWriteBytesPerSecond = persist.Elapsed.TotalSeconds <= 0
-                    ? 0
-                    : snapshot.LongLength / persist.Elapsed.TotalSeconds,
-                Gen0Collections = GC.CollectionCount(0) - gen0Before,
-                Gen1Collections = GC.CollectionCount(1) - gen1Before,
-                Gen2Collections = GC.CollectionCount(2) - gen2Before,
-                LohBytesDelta = GetLohBytes() - lohBefore,
-                GcPauseMilliseconds = (GC.GetTotalPauseDuration() - gcPauseBefore).TotalMilliseconds,
-                IdleWorkingSetBytes = workingSetBefore,
-                RequestCount = queries.Length,
-            };
+                SearchRequest warmup = new() { Mode = SearchMode.Vector, Vector = queries[0], Limit = profile.TopK };
+                _ = index.Search(warmup, 4);
+                List<double> searchLatencies = new(queries.Length);
+                double recall = 0;
+                using (OperationMeasurement selectMeasurement = new("SelectVector", queries.Length, process))
+                {
+                    for (int queryIndex = 0; queryIndex < queries.Length; queryIndex++)
+                    {
+                        SearchRequest request = new()
+                        {
+                            Mode = SearchMode.Vector,
+                            Vector = queries[queryIndex],
+                            Limit = profile.TopK,
+                        };
+                        long started = Stopwatch.GetTimestamp();
+                        IReadOnlyList<HybridRankedResult> found = index.Search(request, 4);
+                        searchLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                        recall += found.Count(result => truth[queryIndex].Contains(result.Id)) / (double)profile.TopK;
+                    }
+
+                    operations.Add(selectMeasurement.Complete(searchLatencies));
+                }
+
+                DocumentRecord[] inserted = CreateOperationDocuments(profile);
+                List<double> insertLatencies = new(inserted.Length);
+                using (OperationMeasurement insertMeasurement = new("Insert", inserted.Length, process, artifactPath))
+                {
+                    foreach (DocumentRecord document in inserted)
+                    {
+                        long started = Stopwatch.GetTimestamp();
+                        index.Upsert(document);
+                        insertLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    }
+
+                    operations.Add(insertMeasurement.Complete(insertLatencies));
+                }
+
+                if (index.Count != documents.Length + inserted.Length)
+                {
+                    throw new InvalidDataException("The index insert benchmark produced an unexpected document count.");
+                }
+
+                DocumentRecord[] updated = CreateUpdatedOperationDocuments(inserted);
+                List<double> updateLatencies = new(updated.Length);
+                using (OperationMeasurement updateMeasurement = new("Update", updated.Length, process, artifactPath))
+                {
+                    foreach (DocumentRecord document in updated)
+                    {
+                        long started = Stopwatch.GetTimestamp();
+                        index.Upsert(document);
+                        updateLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    }
+
+                    operations.Add(updateMeasurement.Complete(updateLatencies));
+                }
+
+                List<double> deleteLatencies = new(updated.Length);
+                using (OperationMeasurement deleteMeasurement = new("Delete", updated.Length, process, artifactPath))
+                {
+                    foreach (DocumentRecord document in updated)
+                    {
+                        long started = Stopwatch.GetTimestamp();
+                        if (!index.Remove(document.Id))
+                        {
+                            throw new InvalidDataException($"The index delete benchmark could not remove '{document.Id}'.");
+                        }
+
+                        deleteLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    }
+
+                    operations.Add(deleteMeasurement.Complete(deleteLatencies));
+                }
+
+                if (index.Count != documents.Length)
+                {
+                    throw new InvalidDataException("The index delete benchmark did not restore the original document count.");
+                }
+
+                byte[] snapshot;
+                using (OperationMeasurement persistMeasurement = new("PersistSnapshot", documents.Length, process, artifactPath))
+                {
+                    snapshot = index.Serialize(documents);
+                    operations.Add(persistMeasurement.Complete());
+                }
+
+                CollectionSearchIndex restored;
+                using (OperationMeasurement coldLoadMeasurement = new(
+                           "ColdLoad",
+                           documents.Length,
+                           process,
+                           artifactPath + "-restored"))
+                {
+                    restored = new CollectionSearchIndex(
+                        definition,
+                        scenario.Kind,
+                        documents,
+                        snapshot,
+                        diskAnnArtifactDirectory: artifactPath + "-restored");
+                    operations.Add(coldLoadMeasurement.Complete());
+                }
+
+                long managedBeforeDispose = GC.GetTotalMemory(forceFullCollection: false);
+                restored.Dispose();
+                index.Dispose();
+                long managedAfterDispose = GC.GetTotalMemory(forceFullCollection: true);
+                resources.Stop();
+                process.Refresh();
+                TimeSpan cpuAfter = process.TotalProcessorTime;
+                long diskBytes = DirectorySize(artifactPath) + snapshot.LongLength;
+                OperationBenchmarkResult build = operations.Single(static operation => operation.Operation == "IndexBuild");
+                OperationBenchmarkResult select = operations.Single(static operation => operation.Operation == "SelectVector");
+                OperationBenchmarkResult persist = operations.Single(static operation => operation.Operation == "PersistSnapshot");
+                OperationBenchmarkResult coldLoad = operations.Single(static operation => operation.Operation == "ColdLoad");
+                return new EndToEndBenchmarkResult
+                {
+                    Scenario = scenario.Name,
+                    IndexKind = scenario.Kind.ToString(),
+                    Quantization = scenario.Quantization.ToString(),
+                    VectorCount = documents.Length,
+                    Dimension = profile.Dimension,
+                    BuildMilliseconds = build.WallMilliseconds,
+                    PersistMilliseconds = persist.WallMilliseconds,
+                    ColdLoadMilliseconds = coldLoad.WallMilliseconds,
+                    ThroughputQueriesPerSecond = select.ThroughputPerSecond,
+                    P50Milliseconds = select.P50Milliseconds,
+                    P95Milliseconds = select.P95Milliseconds,
+                    P99Milliseconds = select.P99Milliseconds,
+                    RecallAtK = recall / queries.Length,
+                    CpuSeconds = (cpuAfter - cpuBefore).TotalSeconds,
+                    CpuUtilization = resources.AverageCpuUtilization,
+                    PeakCpuUtilization = resources.PeakCpuUtilization,
+                    ManagedBytesDelta = GC.GetTotalMemory(forceFullCollection: false) - managedBefore,
+                    WorkingSetBytesDelta = process.WorkingSet64 - workingSetBefore,
+                    AverageWorkingSetBytes = resources.AverageWorkingSetBytes,
+                    PeakWorkingSetBytes = resources.PeakWorkingSetBytes,
+                    ManagedBytesFreedAfterDispose = Math.Max(0, managedBeforeDispose - managedAfterDispose),
+                    DiskBytes = diskBytes,
+                    SnapshotBytes = snapshot.LongLength,
+                    DiskWriteBytesPerSecond = persist.WallMilliseconds <= 0
+                        ? 0
+                        : snapshot.LongLength / TimeSpan.FromMilliseconds(persist.WallMilliseconds).TotalSeconds,
+                    Gen0Collections = GC.CollectionCount(0) - gen0Before,
+                    Gen1Collections = GC.CollectionCount(1) - gen1Before,
+                    Gen2Collections = GC.CollectionCount(2) - gen2Before,
+                    LohBytesDelta = GetLohBytes() - lohBefore,
+                    GcPauseMilliseconds = (GC.GetTotalPauseDuration() - gcPauseBefore).TotalMilliseconds,
+                    IdleWorkingSetBytes = workingSetBefore,
+                    RequestCount = queries.Length + inserted.Length * 3,
+                    Operations = operations,
+                };
+            }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
         {
@@ -201,33 +300,44 @@ internal static class EndToEndBenchmarkRunner
         try
         {
             CollectionDefinition definition = Definition(profile, scenario);
-            Stopwatch migration = Stopwatch.StartNew();
-            using CollectionSearchIndex candidate = new(
-                definition,
-                VectorIndexKind.Hnsw,
-                documents,
-                persistedVectorIndex: null,
-                diskAnnArtifactDirectory: Path.Combine(workspace, "migration"));
-            migration.Stop();
-            double recall = 0;
-            for (int index = 0; index < queries.Length; index++)
+            string migrationPath = Path.Combine(workspace, "migration");
+            Process process = Process.GetCurrentProcess();
+            CollectionSearchIndex candidate;
+            OperationBenchmarkResult migration;
+            using (OperationMeasurement measurement = new("AutoIndexMigration", documents.Length, process, migrationPath))
             {
-                SearchRequest request = new() { Mode = SearchMode.Vector, Vector = queries[index], Limit = profile.TopK };
-                recall += candidate.Search(request, 4).Count(result => truth[index].Contains(result.Id)) / (double)profile.TopK;
+                candidate = new CollectionSearchIndex(
+                    definition,
+                    VectorIndexKind.Hnsw,
+                    documents,
+                    persistedVectorIndex: null,
+                    diskAnnArtifactDirectory: migrationPath);
+                migration = measurement.Complete();
             }
 
-            return new EndToEndBenchmarkResult
+            using (candidate)
             {
-                Scenario = scenario.Name,
-                IndexKind = VectorIndexKind.Hnsw.ToString(),
-                Quantization = VectorQuantizationKind.Float32.ToString(),
-                VectorCount = documents.Length,
-                Dimension = profile.Dimension,
-                BuildMilliseconds = migration.Elapsed.TotalMilliseconds,
-                RecallAtK = recall / queries.Length,
-                MigrationMilliseconds = migration.Elapsed.TotalMilliseconds,
-                RequestCount = queries.Length,
-            };
+                double recall = 0;
+                for (int index = 0; index < queries.Length; index++)
+                {
+                    SearchRequest request = new() { Mode = SearchMode.Vector, Vector = queries[index], Limit = profile.TopK };
+                    recall += candidate.Search(request, 4).Count(result => truth[index].Contains(result.Id)) / (double)profile.TopK;
+                }
+
+                return new EndToEndBenchmarkResult
+                {
+                    Scenario = scenario.Name,
+                    IndexKind = VectorIndexKind.Hnsw.ToString(),
+                    Quantization = VectorQuantizationKind.Float32.ToString(),
+                    VectorCount = documents.Length,
+                    Dimension = profile.Dimension,
+                    BuildMilliseconds = migration.WallMilliseconds,
+                    RecallAtK = recall / queries.Length,
+                    MigrationMilliseconds = migration.WallMilliseconds,
+                    RequestCount = queries.Length,
+                    Operations = [migration],
+                };
+            }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
         {
@@ -286,7 +396,9 @@ internal static class EndToEndBenchmarkRunner
                 appliers[3]);
             await nodes[3]!.StartAsync(timeout.Token).ConfigureAwait(false);
 
-            Stopwatch catchUp = Stopwatch.StartNew();
+            Process benchmarkProcess = Process.GetCurrentProcess();
+            OperationBenchmarkResult catchUp;
+            using OperationMeasurement catchUpMeasurement = new("RaftAddCatchUp", commandCount, benchmarkProcess, storageRoot);
             bool added = false;
             for (int attempt = 0; attempt < 3 && !added; attempt++)
             {
@@ -301,7 +413,7 @@ internal static class EndToEndBenchmarkRunner
                 }
             }
 
-            catchUp.Stop();
+            catchUp = catchUpMeasurement.Complete(errorCount: added ? 0 : 1);
             if (!added)
             {
                 throw new InvalidOperationException("DotNext rejected the joining benchmark member.");
@@ -317,11 +429,12 @@ internal static class EndToEndBenchmarkRunner
                 IndexKind = "Raft",
                 Quantization = "n/a",
                 VectorCount = commandCount,
-                BuildMilliseconds = catchUp.Elapsed.TotalMilliseconds,
-                ThroughputQueriesPerSecond = commandCount / catchUp.Elapsed.TotalSeconds,
-                RaftCatchUpMilliseconds = catchUp.Elapsed.TotalMilliseconds,
+                BuildMilliseconds = catchUp.WallMilliseconds,
+                ThroughputQueriesPerSecond = catchUp.ThroughputPerSecond,
+                RaftCatchUpMilliseconds = catchUp.WallMilliseconds,
                 DiskBytes = DirectorySize(storageRoot),
                 RequestCount = commandCount,
+                Operations = [catchUp],
             };
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
@@ -402,6 +515,10 @@ internal static class EndToEndBenchmarkRunner
             TimeSpan cpuBefore = process.TotalProcessorTime;
             long workingSetBefore = process.WorkingSet64;
             using ResourceSampler resources = new(process);
+            List<OperationBenchmarkResult> operations =
+            [
+                TimingOnly("ServerColdStart", 1, coldStart.Elapsed),
+            ];
 
             ServerCreateCollectionRequest create = new()
             {
@@ -410,95 +527,177 @@ internal static class EndToEndBenchmarkRunner
                 Metric = DistanceMetric.Cosine,
                 VectorIndex = new VectorIndexConfiguration { Kind = VectorIndexKind.Flat },
             };
-            using (HttpResponseMessage response = await PostJsonAsync(
-                       client,
-                       "/api/v1/collections/",
-                       create,
-                       BenchmarkJsonContext.Default.ServerCreateCollectionRequest).ConfigureAwait(false))
+            using (OperationMeasurement createMeasurement = new("CollectionCreate", 1, process, storagePath))
             {
-                await EnsureSuccessAsync(response).ConfigureAwait(false);
-            }
-
-            Stopwatch ingestion = Stopwatch.StartNew();
-            int ingestionBatch = 0;
-            foreach (DocumentRecord[] batch in documents.Chunk(200))
-            {
-                ServerDocumentBatchRequest request = new()
-                {
-                    Atomic = true,
-                    Documents = batch.Select(static document => new ServerDocumentInput
-                    {
-                        Id = document.Id,
-                        Text = document.Text,
-                        Vector = document.Vector,
-                    }).ToArray(),
-                };
-                using HttpResponseMessage response = await PostJsonAsync(
-                    client,
-                    "/api/v1/collections/server-benchmark/documents/upsert",
-                    request,
-                    BenchmarkJsonContext.Default.ServerDocumentBatchRequest,
-                    $"benchmark-ingest-{ingestionBatch++}").ConfigureAwait(false);
-                await EnsureSuccessAsync(response).ConfigureAwait(false);
-            }
-
-            ingestion.Stop();
-            List<double> latencies = new(queries.Length);
-            double recall = 0;
-            int recallSamples = 0;
-            Stopwatch searchWall = Stopwatch.StartNew();
-            for (int index = 0; index < queries.Length; index++)
-            {
-                SearchMode mode = (index % 3) switch
-                {
-                    0 => SearchMode.Vector,
-                    1 => SearchMode.Text,
-                    _ => SearchMode.Hybrid,
-                };
-                ServerQueryRequest request = new()
-                {
-                    Text = mode == SearchMode.Vector ? null : "vector database benchmark",
-                    Vector = mode == SearchMode.Text ? null : queries[index],
-                    Mode = mode,
-                    Limit = profile.TopK,
-                    Include = [],
-                };
                 long started = Stopwatch.GetTimestamp();
                 using HttpResponseMessage response = await PostJsonAsync(
                     client,
-                    "/api/v1/collections/server-benchmark/documents/query",
-                    request,
-                    BenchmarkJsonContext.Default.ServerQueryRequest,
-                    $"benchmark-query-{index}").ConfigureAwait(false);
+                    "/api/v1/collections/",
+                    create,
+                    BenchmarkJsonContext.Default.ServerCreateCollectionRequest).ConfigureAwait(false);
                 await EnsureSuccessAsync(response).ConfigureAwait(false);
-                ServerQueryResponse result = await response.Content.ReadFromJsonAsync(
-                        BenchmarkJsonContext.Default.ServerQueryResponse)
-                    .ConfigureAwait(false) ?? throw new InvalidDataException("The HTTP benchmark returned an empty query response.");
-                latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-                if (mode == SearchMode.Vector)
-                {
-                    recall += result.Hits.Count(hit => truth[index].Contains(hit.Id)) / (double)profile.TopK;
-                    recallSamples++;
-                }
+                operations.Add(createMeasurement.Complete([Stopwatch.GetElapsedTime(started).TotalMilliseconds]));
             }
 
-            searchWall.Stop();
-            (int backpressureRejections, int mixedReadSuccesses) = await RunBackpressureProbeAsync(
-                client,
-                documents,
-                queries[0],
-                profile.TopK).ConfigureAwait(false);
-            (int rateLimitRejections, double retryAfterSeconds) = await RunRateLimitProbeAsync(client, queries[0], profile.TopK)
-                .ConfigureAwait(false);
-            if (backpressureRejections == 0)
+            List<double> insertLatencies = [];
+            using (OperationMeasurement insertMeasurement = new("HttpInsert", documents.Length, process, storagePath))
             {
-                throw new InvalidOperationException("The real HTTP backpressure probe did not produce a queue_saturated rejection.");
+                int ingestionBatch = 0;
+                foreach (DocumentRecord[] batch in documents.Chunk(200))
+                {
+                    ServerDocumentBatchRequest request = new()
+                    {
+                        Atomic = true,
+                        Documents = batch.Select(static document => new ServerDocumentInput
+                        {
+                            Id = document.Id,
+                            Text = document.Text,
+                            Vector = document.Vector,
+                        }).ToArray(),
+                    };
+                    long started = Stopwatch.GetTimestamp();
+                    using HttpResponseMessage response = await PostJsonAsync(
+                        client,
+                        "/api/v1/collections/server-benchmark/documents/upsert",
+                        request,
+                        BenchmarkJsonContext.Default.ServerDocumentBatchRequest,
+                        $"benchmark-ingest-{ingestionBatch++}").ConfigureAwait(false);
+                    await EnsureSuccessAsync(response).ConfigureAwait(false);
+                    insertLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+
+                operations.Add(insertMeasurement.Complete(insertLatencies));
             }
 
-            if (mixedReadSuccesses != 16)
+            List<double> selectLatencies = new(queries.Length);
+            double recall = 0;
+            int recallSamples = 0;
+            using (OperationMeasurement selectMeasurement = new("HttpSelectMixed", queries.Length, process, storagePath))
+            {
+                for (int index = 0; index < queries.Length; index++)
+                {
+                    SearchMode mode = (index % 3) switch
+                    {
+                        0 => SearchMode.Vector,
+                        1 => SearchMode.Text,
+                        _ => SearchMode.Hybrid,
+                    };
+                    ServerQueryRequest request = new()
+                    {
+                        Text = mode == SearchMode.Vector ? null : "vector database benchmark",
+                        Vector = mode == SearchMode.Text ? null : queries[index],
+                        Mode = mode,
+                        Limit = profile.TopK,
+                        Include = [],
+                    };
+                    long started = Stopwatch.GetTimestamp();
+                    using HttpResponseMessage response = await PostJsonAsync(
+                        client,
+                        "/api/v1/collections/server-benchmark/documents/query",
+                        request,
+                        BenchmarkJsonContext.Default.ServerQueryRequest,
+                        $"benchmark-query-{index}").ConfigureAwait(false);
+                    await EnsureSuccessAsync(response).ConfigureAwait(false);
+                    ServerQueryResponse result = await response.Content.ReadFromJsonAsync(
+                            BenchmarkJsonContext.Default.ServerQueryResponse)
+                        .ConfigureAwait(false) ?? throw new InvalidDataException("The HTTP benchmark returned an empty query response.");
+                    selectLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    if (mode == SearchMode.Vector)
+                    {
+                        recall += result.Hits.Count(hit => truth[index].Contains(hit.Id)) / (double)profile.TopK;
+                        recallSamples++;
+                    }
+                }
+
+                operations.Add(selectMeasurement.Complete(selectLatencies));
+            }
+
+            int mutationCount = Math.Min(profile.OperationCount, documents.Length);
+            DocumentRecord[] mutations = documents[..mutationCount];
+            List<double> updateLatencies = [];
+            using (OperationMeasurement updateMeasurement = new("HttpUpdate", mutationCount, process, storagePath))
+            {
+                int batchIndex = 0;
+                foreach (DocumentRecord[] batch in mutations.Chunk(200))
+                {
+                    ServerDocumentUpdateBatchRequest request = new()
+                    {
+                        Atomic = true,
+                        Documents = batch.Select(static document => new ServerDocumentUpdateInput
+                        {
+                            Id = document.Id,
+                            Text = document.Text + " updated",
+                            Vector = document.Vector.Select(static value => value * 0.98F).ToArray(),
+                        }).ToArray(),
+                    };
+                    long started = Stopwatch.GetTimestamp();
+                    using HttpResponseMessage response = await SendJsonAsync(
+                        client,
+                        HttpMethod.Patch,
+                        "/api/v1/collections/server-benchmark/documents/",
+                        request,
+                        BenchmarkJsonContext.Default.ServerDocumentUpdateBatchRequest,
+                        $"benchmark-update-{batchIndex++}").ConfigureAwait(false);
+                    await EnsureSuccessAsync(response).ConfigureAwait(false);
+                    updateLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+
+                operations.Add(updateMeasurement.Complete(updateLatencies));
+            }
+
+            List<double> deleteLatencies = [];
+            using (OperationMeasurement deleteMeasurement = new("HttpDelete", mutationCount, process, storagePath))
+            {
+                int batchIndex = 0;
+                foreach (DocumentRecord[] batch in mutations.Chunk(200))
+                {
+                    ServerDocumentDeleteRequest request = new()
+                    {
+                        Atomic = true,
+                        Ids = batch.Select(static document => document.Id).ToArray(),
+                    };
+                    long started = Stopwatch.GetTimestamp();
+                    using HttpResponseMessage response = await PostJsonAsync(
+                        client,
+                        "/api/v1/collections/server-benchmark/documents/delete",
+                        request,
+                        BenchmarkJsonContext.Default.ServerDocumentDeleteRequest,
+                        $"benchmark-delete-{batchIndex++}").ConfigureAwait(false);
+                    await EnsureSuccessAsync(response).ConfigureAwait(false);
+                    deleteLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+
+                operations.Add(deleteMeasurement.Complete(deleteLatencies));
+            }
+
+            PressureProbeResult pressure;
+            using (OperationMeasurement pressureMeasurement = new("HttpMixedBackpressure", 80, process, storagePath))
+            {
+                pressure = await RunBackpressureProbeAsync(
+                    client,
+                    documents,
+                    queries[0],
+                    profile.TopK).ConfigureAwait(false);
+                operations.Add(pressureMeasurement.Complete(errorCount: pressure.TotalRejections));
+            }
+
+            int rateLimitRejections;
+            double retryAfterSeconds;
+            using (OperationMeasurement rateMeasurement = new("HttpRateLimit", 128, process, storagePath))
+            {
+                (rateLimitRejections, retryAfterSeconds) = await RunRateLimitProbeAsync(client, queries[0], profile.TopK)
+                    .ConfigureAwait(false);
+                operations.Add(rateMeasurement.Complete(errorCount: rateLimitRejections));
+            }
+            if (pressure.TotalRejections == 0)
+            {
+                throw new InvalidOperationException("The real HTTP pressure probe did not produce a queue or congestion rejection.");
+            }
+
+            if (pressure.ReadSuccesses != 16)
             {
                 throw new InvalidOperationException(
-                    $"Only {mixedReadSuccesses} of 16 reads succeeded during the mixed read/write pressure probe.");
+                    $"Only {pressure.ReadSuccesses} of 16 reads succeeded during the mixed read/write pressure probe.");
             }
 
             if (rateLimitRejections == 0 || retryAfterSeconds <= 0)
@@ -508,6 +707,9 @@ internal static class EndToEndBenchmarkRunner
 
             resources.Stop();
             process.Refresh();
+            OperationBenchmarkResult insert = operations.Single(static operation => operation.Operation == "HttpInsert");
+            OperationBenchmarkResult select = operations.Single(static operation => operation.Operation == "HttpSelectMixed");
+            int measuredItems = documents.Length + queries.Length + mutationCount * 2 + 80 + 128;
             return new EndToEndBenchmarkResult
             {
                 Scenario = scenario,
@@ -515,13 +717,13 @@ internal static class EndToEndBenchmarkRunner
                 Quantization = VectorQuantizationKind.Float32.ToString(),
                 VectorCount = documents.Length,
                 Dimension = profile.Dimension,
-                BuildMilliseconds = ingestion.Elapsed.TotalMilliseconds,
-                IngestMilliseconds = ingestion.Elapsed.TotalMilliseconds,
+                BuildMilliseconds = insert.WallMilliseconds,
+                IngestMilliseconds = insert.WallMilliseconds,
                 ColdLoadMilliseconds = coldStart.Elapsed.TotalMilliseconds,
-                ThroughputQueriesPerSecond = queries.Length / searchWall.Elapsed.TotalSeconds,
-                P50Milliseconds = Percentile(latencies, 0.50),
-                P95Milliseconds = Percentile(latencies, 0.95),
-                P99Milliseconds = Percentile(latencies, 0.99),
+                ThroughputQueriesPerSecond = select.ThroughputPerSecond,
+                P50Milliseconds = select.P50Milliseconds,
+                P95Milliseconds = select.P95Milliseconds,
+                P99Milliseconds = select.P99Milliseconds,
                 RecallAtK = recall / recallSamples,
                 CpuSeconds = (process.TotalProcessorTime - cpuBefore).TotalSeconds,
                 CpuUtilization = resources.AverageCpuUtilization,
@@ -530,14 +732,17 @@ internal static class EndToEndBenchmarkRunner
                 AverageWorkingSetBytes = resources.AverageWorkingSetBytes,
                 PeakWorkingSetBytes = resources.PeakWorkingSetBytes,
                 DiskBytes = DirectorySize(storagePath),
-                BackpressureRejections = backpressureRejections,
+                BackpressureRejections = pressure.TotalRejections,
+                QueueSaturationRejections = pressure.QueueSaturationRejections,
+                CongestionRejections = pressure.CongestionRejections,
                 RateLimitRejections = rateLimitRejections,
                 RateLimitRetryAfterSeconds = retryAfterSeconds,
                 IdleWorkingSetBytes = workingSetBefore,
-                RequestCount = queries.Length + 64 + 16 + 128,
-                ErrorCount = backpressureRejections + rateLimitRejections,
-                ErrorRate = (backpressureRejections + rateLimitRejections) / (double)(queries.Length + 64 + 16 + 128),
-                MixedReadSuccesses = mixedReadSuccesses,
+                RequestCount = measuredItems,
+                ErrorCount = pressure.TotalRejections + rateLimitRejections,
+                ErrorRate = (pressure.TotalRejections + rateLimitRejections) / (double)measuredItems,
+                MixedReadSuccesses = pressure.ReadSuccesses,
+                Operations = operations,
             };
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
@@ -578,13 +783,13 @@ internal static class EndToEndBenchmarkRunner
         }
     }
 
-    private static async Task<(int Rejections, int ReadSuccesses)> RunBackpressureProbeAsync(
+    private static async Task<PressureProbeResult> RunBackpressureProbeAsync(
         HttpClient client,
         DocumentRecord[] documents,
         float[] query,
         int topK)
     {
-        Task<bool>[] requests = Enumerable.Range(0, 64).Select(async index =>
+        Task<PressureRejectionKind>[] requests = Enumerable.Range(0, 64).Select(async index =>
         {
             DocumentRecord source = documents[index % documents.Length];
             ServerDocumentBatchRequest request = new()
@@ -607,11 +812,22 @@ internal static class EndToEndBenchmarkRunner
             if (response.StatusCode != HttpStatusCode.TooManyRequests)
             {
                 await EnsureSuccessAsync(response).ConfigureAwait(false);
-                return false;
+                return PressureRejectionKind.None;
             }
 
             string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return body.Contains("queue_saturated", StringComparison.Ordinal);
+            if (body.Contains("queue_saturated", StringComparison.Ordinal))
+            {
+                return PressureRejectionKind.QueueSaturated;
+            }
+
+            if (response.Headers.TryGetValues("X-SlimVector-RateLimit-Kind", out IEnumerable<string>? kinds) &&
+                kinds.Contains("congestion", StringComparer.Ordinal))
+            {
+                return PressureRejectionKind.Congestion;
+            }
+
+            throw new HttpRequestException($"The pressure probe received an unclassified HTTP 429: {body}");
         }).ToArray();
         Task<bool>[] reads = Enumerable.Range(0, 16).Select(async index =>
         {
@@ -634,9 +850,12 @@ internal static class EndToEndBenchmarkRunner
                 .ConfigureAwait(false) ?? throw new InvalidDataException("The mixed read/write probe returned an empty response.");
             return result.Hits.Length > 0;
         }).ToArray();
-        bool[] rejected = await Task.WhenAll(requests).ConfigureAwait(false);
+        PressureRejectionKind[] rejected = await Task.WhenAll(requests).ConfigureAwait(false);
         bool[] successfulReads = await Task.WhenAll(reads).ConfigureAwait(false);
-        return (rejected.Count(static value => value), successfulReads.Count(static value => value));
+        return new PressureProbeResult(
+            rejected.Count(static value => value == PressureRejectionKind.QueueSaturated),
+            rejected.Count(static value => value == PressureRejectionKind.Congestion),
+            successfulReads.Count(static value => value));
     }
 
     private static async Task<(int Rejections, double RetryAfterSeconds)> RunRateLimitProbeAsync(
@@ -740,6 +959,36 @@ internal static class EndToEndBenchmarkRunner
         }).ToArray();
     }
 
+    private static DocumentRecord[] CreateOperationDocuments(BenchmarkProfile profile)
+    {
+        Random random = new(20260720);
+        return Enumerable.Range(0, profile.OperationCount).Select(index => new DocumentRecord
+        {
+            Id = "operation-" + index.ToString(CultureInfo.InvariantCulture),
+            Text = "benchmark insert update delete document",
+            Vector = Enumerable.Range(0, profile.Dimension).Select(_ => random.NextSingle() * 2 - 1).ToArray(),
+            Metadata = new Dictionary<string, MetadataValue>(StringComparer.Ordinal)
+            {
+                ["operation"] = MetadataValue.From("insert"),
+                ["ordinal"] = MetadataValue.From((long)index),
+            },
+            Version = 1,
+        }).ToArray();
+    }
+
+    private static DocumentRecord[] CreateUpdatedOperationDocuments(IEnumerable<DocumentRecord> documents) => documents
+        .Select(static document => document with
+        {
+            Text = "benchmark document after update",
+            Vector = document.Vector.Select(static value => value * 0.95F + 0.01F).ToArray(),
+            Metadata = new Dictionary<string, MetadataValue>(document.Metadata, StringComparer.Ordinal)
+            {
+                ["operation"] = MetadataValue.From("update"),
+            },
+            Version = document.Version + 1,
+        })
+        .ToArray();
+
     private static float[][] SelectQueries(DocumentRecord[] documents, int count) => Enumerable.Range(0, count)
         .Select(index => documents[(index * 7_919) % documents.Length].Vector)
         .ToArray();
@@ -757,9 +1006,9 @@ internal static class EndToEndBenchmarkRunner
 
     private static BenchmarkProfile ParseProfile(string name) => name.ToLowerInvariant() switch
     {
-        "smoke" => new BenchmarkProfile("Smoke", 1_000, 384, 20, 10, 32, 4, 8, 12, 64, 8, 64, 16, 64),
-        "standard" => new BenchmarkProfile("Standard", 25_000, 768, 100, 10, 256, 8, 8, 16, 128, 16, 128, 32, 128),
-        "large" => new BenchmarkProfile("Large", 250_000, 1_536, 200, 10, 1_024, 16, 16, 16, 200, 32, 256, 48, 192),
+        "smoke" => new BenchmarkProfile("Smoke", 1_000, 384, 20, 10, 32, 4, 8, 12, 64, 8, 64, 16, 64, 100),
+        "standard" => new BenchmarkProfile("Standard", 25_000, 768, 100, 10, 256, 8, 8, 16, 128, 16, 128, 32, 128, 1_000),
+        "large" => new BenchmarkProfile("Large", 250_000, 1_536, 200, 10, 1_024, 16, 16, 16, 200, 32, 256, 48, 192, 5_000),
         _ => throw new ArgumentException("Benchmark profile must be Smoke, Standard, or Large.", nameof(name)),
     };
 
@@ -811,12 +1060,14 @@ internal static class EndToEndBenchmarkRunner
                 },
                 ServerSearchModes = [SearchMode.Vector.ToString(), SearchMode.Text.ToString(), SearchMode.Hybrid.ToString()],
                 BackpressureQueueCapacity = 1,
+                BackpressureHoldWindowMilliseconds = 100,
                 BackpressureProbeRequests = 64,
                 DocumentsPerPressureRequest = 100,
                 MixedReadRequests = 16,
                 ClientTokensPerSecond = 1,
                 ClientBurstCapacity = 50,
                 RateLimitProbeRequests = 128,
+                MutationDocumentCount = profile.OperationCount,
             },
         };
     }
@@ -905,6 +1156,18 @@ internal static class EndToEndBenchmarkRunner
         return values[index];
     }
 
+    private static OperationBenchmarkResult TimingOnly(string operation, int itemCount, TimeSpan elapsed) => new()
+    {
+        Operation = operation,
+        ItemCount = itemCount,
+        SampleCount = 1,
+        WallMilliseconds = elapsed.TotalMilliseconds,
+        ThroughputPerSecond = elapsed.TotalSeconds <= 0 ? 0 : itemCount / elapsed.TotalSeconds,
+        P50Milliseconds = elapsed.TotalMilliseconds,
+        P95Milliseconds = elapsed.TotalMilliseconds,
+        P99Milliseconds = elapsed.TotalMilliseconds,
+    };
+
     private static long DirectorySize(string path) => Directory.Exists(path)
         ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(static file => new FileInfo(file).Length)
         : 0;
@@ -953,6 +1216,10 @@ internal static class EndToEndBenchmarkRunner
         startInfo.Environment["Backpressure__PerClientQueueCapacity"] = "1";
         startInfo.Environment["Backpressure__MaximumConcurrentWrites"] = "1";
         startInfo.Environment["Backpressure__EnqueueTimeout"] = "00:00:00";
+        startInfo.Environment["AdaptiveBatching__MinimumBatchSize"] = "16";
+        startInfo.Environment["AdaptiveBatching__MaximumBatchSize"] = "256";
+        startInfo.Environment["AdaptiveBatching__MinimumWindow"] = "00:00:00.100";
+        startInfo.Environment["AdaptiveBatching__MaximumWindow"] = "00:00:00.100";
         startInfo.Environment["RateLimit__Enabled"] = "true";
         startInfo.Environment["RateLimit__Global__TokensPerSecond"] = "100000";
         startInfo.Environment["RateLimit__Global__BurstCapacity"] = "100000";
@@ -973,10 +1240,24 @@ internal static class EndToEndBenchmarkRunner
         string requestUri,
         T value,
         JsonTypeInfo<T> typeInfo,
+        string? clientId = null) => await SendJsonAsync(
+            client,
+            HttpMethod.Post,
+            requestUri,
+            value,
+            typeInfo,
+            clientId).ConfigureAwait(false);
+
+    private static async Task<HttpResponseMessage> SendJsonAsync<T>(
+        HttpClient client,
+        HttpMethod method,
+        string requestUri,
+        T value,
+        JsonTypeInfo<T> typeInfo,
         string? clientId = null)
     {
         using JsonContent content = JsonContent.Create(value, typeInfo);
-        using HttpRequestMessage request = new(HttpMethod.Post, requestUri) { Content = content };
+        using HttpRequestMessage request = new(method, requestUri) { Content = content };
         if (clientId is not null)
         {
             request.Headers.Add("X-SlimVector-Client-Id", clientId);
@@ -1206,6 +1487,150 @@ internal sealed class ResourceSampler : IDisposable
     }
 }
 
+internal sealed class OperationMeasurement : IDisposable
+{
+    private readonly string _operation;
+    private readonly int _itemCount;
+    private readonly Process _process;
+    private readonly string? _diskPath;
+    private readonly bool _capturesManagedRuntime;
+    private readonly Stopwatch _wall = Stopwatch.StartNew();
+    private readonly ResourceSampler _resources;
+    private readonly TimeSpan _cpuBefore;
+    private readonly long _workingSetBefore;
+    private readonly long _managedBefore;
+    private readonly long _allocatedBefore;
+    private readonly int _gen0Before;
+    private readonly int _gen1Before;
+    private readonly int _gen2Before;
+    private readonly long _lohBefore;
+    private readonly TimeSpan _gcPauseBefore;
+    private readonly long _diskBefore;
+    private bool _completed;
+
+    public OperationMeasurement(string operation, int itemCount, Process process, string? diskPath = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        ArgumentOutOfRangeException.ThrowIfNegative(itemCount);
+        ArgumentNullException.ThrowIfNull(process);
+        _operation = operation;
+        _itemCount = itemCount;
+        _process = process;
+        _diskPath = diskPath;
+        process.Refresh();
+        _capturesManagedRuntime = process.Id == Environment.ProcessId;
+        _cpuBefore = process.TotalProcessorTime;
+        _workingSetBefore = process.WorkingSet64;
+        _managedBefore = _capturesManagedRuntime ? GC.GetTotalMemory(forceFullCollection: false) : 0;
+        _allocatedBefore = _capturesManagedRuntime ? GC.GetTotalAllocatedBytes(precise: false) : 0;
+        _gen0Before = _capturesManagedRuntime ? GC.CollectionCount(0) : 0;
+        _gen1Before = _capturesManagedRuntime ? GC.CollectionCount(1) : 0;
+        _gen2Before = _capturesManagedRuntime ? GC.CollectionCount(2) : 0;
+        _lohBefore = _capturesManagedRuntime ? GetLohBytes() : 0;
+        _gcPauseBefore = _capturesManagedRuntime ? GC.GetTotalPauseDuration() : TimeSpan.Zero;
+        _diskBefore = GetPathSize(diskPath);
+        _resources = new ResourceSampler(process);
+    }
+
+    public OperationBenchmarkResult Complete(IReadOnlyList<double>? latencies = null, int errorCount = 0)
+    {
+        ObjectDisposedException.ThrowIf(_completed, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(errorCount);
+        _completed = true;
+        _wall.Stop();
+        _resources.Stop();
+        _process.Refresh();
+        TimeSpan cpuAfter = _process.TotalProcessorTime;
+        long workingSetAfter = _process.WorkingSet64;
+        long managedAfter = _capturesManagedRuntime ? GC.GetTotalMemory(forceFullCollection: false) : 0;
+        int sampleCount = latencies?.Count ?? 1;
+        double fallbackLatency = sampleCount == 0 ? 0 : _wall.Elapsed.TotalMilliseconds / sampleCount;
+        double p50 = latencies is { Count: > 0 } ? Percentile(latencies, 0.50) : fallbackLatency;
+        double p95 = latencies is { Count: > 0 } ? Percentile(latencies, 0.95) : fallbackLatency;
+        double p99 = latencies is { Count: > 0 } ? Percentile(latencies, 0.99) : fallbackLatency;
+        long averageWorkingSet = _resources.AverageWorkingSetBytes > 0
+            ? _resources.AverageWorkingSetBytes
+            : (_workingSetBefore + workingSetAfter) / 2;
+        long peakWorkingSet = Math.Max(
+            Math.Max(_workingSetBefore, workingSetAfter),
+            _resources.PeakWorkingSetBytes);
+        return new OperationBenchmarkResult
+        {
+            Operation = _operation,
+            ItemCount = _itemCount,
+            SampleCount = sampleCount,
+            WallMilliseconds = _wall.Elapsed.TotalMilliseconds,
+            ThroughputPerSecond = _wall.Elapsed.TotalSeconds <= 0 ? 0 : _itemCount / _wall.Elapsed.TotalSeconds,
+            P50Milliseconds = p50,
+            P95Milliseconds = p95,
+            P99Milliseconds = p99,
+            CpuSeconds = (cpuAfter - _cpuBefore).TotalSeconds,
+            AverageCpuUtilization = _resources.AverageCpuUtilization,
+            PeakCpuUtilization = _resources.PeakCpuUtilization,
+            WorkingSetBytesBefore = _workingSetBefore,
+            WorkingSetBytesAfter = workingSetAfter,
+            WorkingSetBytesDelta = workingSetAfter - _workingSetBefore,
+            AverageWorkingSetBytes = averageWorkingSet,
+            PeakWorkingSetBytes = peakWorkingSet,
+            ManagedBytesBefore = _managedBefore,
+            ManagedBytesAfter = managedAfter,
+            ManagedBytesDelta = managedAfter - _managedBefore,
+            AllocatedBytes = _capturesManagedRuntime
+                ? Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - _allocatedBefore)
+                : 0,
+            Gen0Collections = _capturesManagedRuntime ? GC.CollectionCount(0) - _gen0Before : 0,
+            Gen1Collections = _capturesManagedRuntime ? GC.CollectionCount(1) - _gen1Before : 0,
+            Gen2Collections = _capturesManagedRuntime ? GC.CollectionCount(2) - _gen2Before : 0,
+            LohBytesDelta = _capturesManagedRuntime ? GetLohBytes() - _lohBefore : 0,
+            GcPauseMilliseconds = _capturesManagedRuntime
+                ? (GC.GetTotalPauseDuration() - _gcPauseBefore).TotalMilliseconds
+                : 0,
+            DiskBytesDelta = GetPathSize(_diskPath) - _diskBefore,
+            ErrorCount = errorCount,
+        };
+    }
+
+    public void Dispose()
+    {
+        if (!_completed)
+        {
+            _wall.Stop();
+            _resources.Dispose();
+            _completed = true;
+        }
+    }
+
+    private static double Percentile(IReadOnlyList<double> values, double percentile)
+    {
+        double[] ordered = values.Order().ToArray();
+        int index = Math.Clamp((int)Math.Ceiling(ordered.Length * percentile) - 1, 0, ordered.Length - 1);
+        return ordered[index];
+    }
+
+    private static long GetLohBytes()
+    {
+        ReadOnlySpan<GCGenerationInfo> generations = GC.GetGCMemoryInfo().GenerationInfo;
+        return generations.Length > 3 ? generations[3].SizeAfterBytes : 0;
+    }
+
+    private static long GetPathSize(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return 0;
+        }
+
+        if (File.Exists(path))
+        {
+            return new FileInfo(path).Length;
+        }
+
+        return Directory.Exists(path)
+            ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(static file => new FileInfo(file).Length)
+            : 0;
+    }
+}
+
 internal sealed record BenchmarkProfile(
     string Name,
     int VectorCount,
@@ -1220,7 +1645,8 @@ internal sealed record BenchmarkProfile(
     int HnswDegree,
     int HnswSearch,
     int DiskAnnDegree,
-    int DiskAnnSearchList);
+    int DiskAnnSearchList,
+    int OperationCount);
 
 internal sealed record BenchmarkIndexScenario(
     string Name,
@@ -1315,6 +1741,8 @@ internal sealed record BenchmarkConfiguration
 
     public int BackpressureQueueCapacity { get; init; }
 
+    public int BackpressureHoldWindowMilliseconds { get; init; }
+
     public int BackpressureProbeRequests { get; init; }
 
     public int DocumentsPerPressureRequest { get; init; }
@@ -1326,6 +1754,8 @@ internal sealed record BenchmarkConfiguration
     public double ClientBurstCapacity { get; init; }
 
     public int RateLimitProbeRequests { get; init; }
+
+    public int MutationDocumentCount { get; init; }
 }
 
 internal sealed record EndToEndBenchmarkResult
@@ -1396,6 +1826,10 @@ internal sealed record EndToEndBenchmarkResult
 
     public int BackpressureRejections { get; init; }
 
+    public int QueueSaturationRejections { get; init; }
+
+    public int CongestionRejections { get; init; }
+
     public int RateLimitRejections { get; init; }
 
     public double RateLimitRetryAfterSeconds { get; init; }
@@ -1410,7 +1844,81 @@ internal sealed record EndToEndBenchmarkResult
 
     public int MixedReadSuccesses { get; init; }
 
+    public IReadOnlyList<OperationBenchmarkResult> Operations { get; init; } = [];
+
     public string? Failure { get; init; }
+}
+
+internal sealed record OperationBenchmarkResult
+{
+    public required string Operation { get; init; }
+
+    public int ItemCount { get; init; }
+
+    public int SampleCount { get; init; }
+
+    public double WallMilliseconds { get; init; }
+
+    public double ThroughputPerSecond { get; init; }
+
+    public double P50Milliseconds { get; init; }
+
+    public double P95Milliseconds { get; init; }
+
+    public double P99Milliseconds { get; init; }
+
+    public double CpuSeconds { get; init; }
+
+    public double AverageCpuUtilization { get; init; }
+
+    public double PeakCpuUtilization { get; init; }
+
+    public long WorkingSetBytesBefore { get; init; }
+
+    public long WorkingSetBytesAfter { get; init; }
+
+    public long WorkingSetBytesDelta { get; init; }
+
+    public long AverageWorkingSetBytes { get; init; }
+
+    public long PeakWorkingSetBytes { get; init; }
+
+    public long ManagedBytesBefore { get; init; }
+
+    public long ManagedBytesAfter { get; init; }
+
+    public long ManagedBytesDelta { get; init; }
+
+    public long AllocatedBytes { get; init; }
+
+    public int Gen0Collections { get; init; }
+
+    public int Gen1Collections { get; init; }
+
+    public int Gen2Collections { get; init; }
+
+    public long LohBytesDelta { get; init; }
+
+    public double GcPauseMilliseconds { get; init; }
+
+    public long DiskBytesDelta { get; init; }
+
+    public int ErrorCount { get; init; }
+}
+
+internal enum PressureRejectionKind
+{
+    None,
+    QueueSaturated,
+    Congestion,
+}
+
+internal sealed record PressureProbeResult(
+    int QueueSaturationRejections,
+    int CongestionRejections,
+    int ReadSuccesses)
+{
+    public int TotalRejections => QueueSaturationRejections + CongestionRejections;
 }
 
 internal sealed record ServerCreateCollectionRequest
@@ -1436,6 +1944,29 @@ internal sealed record ServerDocumentInput
 internal sealed record ServerDocumentBatchRequest
 {
     public required ServerDocumentInput[] Documents { get; init; }
+
+    public bool Atomic { get; init; }
+}
+
+internal sealed record ServerDocumentUpdateInput
+{
+    public required string Id { get; init; }
+
+    public string? Text { get; init; }
+
+    public float[]? Vector { get; init; }
+}
+
+internal sealed record ServerDocumentUpdateBatchRequest
+{
+    public required ServerDocumentUpdateInput[] Documents { get; init; }
+
+    public bool Atomic { get; init; }
+}
+
+internal sealed record ServerDocumentDeleteRequest
+{
+    public required string[] Ids { get; init; }
 
     public bool Atomic { get; init; }
 }
@@ -1467,6 +1998,8 @@ internal sealed record ServerQueryHit
 [JsonSerializable(typeof(BenchmarkRun))]
 [JsonSerializable(typeof(ServerCreateCollectionRequest))]
 [JsonSerializable(typeof(ServerDocumentBatchRequest))]
+[JsonSerializable(typeof(ServerDocumentUpdateBatchRequest))]
+[JsonSerializable(typeof(ServerDocumentDeleteRequest))]
 [JsonSerializable(typeof(ServerQueryRequest))]
 [JsonSerializable(typeof(ServerQueryResponse))]
 internal sealed partial class BenchmarkJsonContext : JsonSerializerContext;
