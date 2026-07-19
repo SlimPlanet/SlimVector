@@ -11,12 +11,16 @@ public sealed class FileSystemStorageEngine : IStorageEngine
     private const string CatalogFileName = "catalog.json";
     private readonly StorageSettings _settings;
     private readonly TimeProvider _timeProvider;
+    private readonly StorageMetrics _metrics;
     private readonly SemaphoreSlim _catalogLock = new(1, 1);
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _collectionLocks = new();
     private CatalogFile _catalog = new();
     private volatile bool _initialized;
 
-    public FileSystemStorageEngine(StorageSettings settings, TimeProvider? timeProvider = null)
+    public FileSystemStorageEngine(
+        StorageSettings settings,
+        TimeProvider? timeProvider = null,
+        StorageMetrics? metrics = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(settings.Path);
@@ -30,6 +34,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
 
         _settings = settings with { Path = Path.GetFullPath(settings.Path) };
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _metrics = metrics ?? new StorageMetrics();
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -389,6 +394,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             }
 
             byte[] contents = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            _metrics.RecordRead(contents.LongLength);
             int newline = Array.IndexOf(contents, (byte)'\n');
             if (newline != 64)
             {
@@ -442,6 +448,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
                 await stream.WriteAsync(Encoding.ASCII.GetBytes(checksum + "\n"), cancellationToken).ConfigureAwait(false);
                 await stream.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+                _metrics.RecordWrite(stream.Position);
                 await FlushAsync(stream, cancellationToken).ConfigureAwait(false);
                 File.Move(temporary, path, overwrite: true);
             }
@@ -539,6 +546,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             byte[] header = Encoding.ASCII.GetBytes(checksum + "\n");
             await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
             await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            _metrics.RecordWrite(stream.Position);
             await FlushAsync(stream, cancellationToken).ConfigureAwait(false);
         }
 
@@ -546,12 +554,13 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         return new SegmentDescriptor { Sequence = payload.Sequence, FileName = fileName, Checksum = checksum, Length = body.LongLength };
     }
 
-    private static async ValueTask<(SegmentPayload Payload, SegmentDescriptor Descriptor)> ReadSegmentAsync(
+    private async ValueTask<(SegmentPayload Payload, SegmentDescriptor Descriptor)> ReadSegmentAsync(
         string path,
         Guid expectedCollectionId,
         CancellationToken cancellationToken)
     {
         byte[] contents = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        _metrics.RecordRead(contents.LongLength);
         int newline = Array.IndexOf(contents, (byte)'\n');
         if (newline != 64)
         {
@@ -602,6 +611,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
                 16 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
             await JsonSerializer.SerializeAsync(stream, value, typeInfo, cancellationToken).ConfigureAwait(false);
+            _metrics.RecordWrite(stream.Position);
             await FlushAsync(stream, cancellationToken).ConfigureAwait(false);
             File.Move(temporary, path, overwrite: true);
         }
@@ -614,7 +624,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         }
     }
 
-    private static async ValueTask<T?> ReadJsonAsync<T>(
+    private async ValueTask<T?> ReadJsonAsync<T>(
         string path,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo,
         CancellationToken cancellationToken)
@@ -626,7 +636,9 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             FileShare.Read,
             16 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await JsonSerializer.DeserializeAsync(stream, typeInfo, cancellationToken).ConfigureAwait(false);
+        T? value = await JsonSerializer.DeserializeAsync(stream, typeInfo, cancellationToken).ConfigureAwait(false);
+        _metrics.RecordRead(stream.Length);
+        return value;
     }
 
     private async ValueTask FlushAsync(FileStream stream, CancellationToken cancellationToken)
@@ -635,6 +647,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         if (_settings.FlushToDisk)
         {
             stream.Flush(flushToDisk: true);
+            _metrics.RecordDurableFlush();
         }
     }
 

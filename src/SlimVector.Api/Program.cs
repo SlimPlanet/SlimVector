@@ -11,6 +11,7 @@ using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
 using SlimVector.Replication;
+using SlimVector.Storage;
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(args);
 long configuredMaximumBodyBytes = builder.Configuration.GetValue(
@@ -98,6 +99,7 @@ app.MapGet("/metrics", static (
     IGeoReplicationService geoReplication,
     IGeoReplicationReceiver geoReceiver,
     IAdmissionController admission,
+    StorageMetrics storageMetrics,
     Microsoft.Extensions.Options.IOptions<ObservabilityOptions> observability) =>
 {
     if (!observability.Value.MetricsEnabled)
@@ -106,10 +108,31 @@ app.MapGet("/metrics", static (
     }
 
     long memory = GC.GetTotalMemory(forceFullCollection: false);
+    GCMemoryInfo gcMemory = GC.GetGCMemoryInfo();
+    ReadOnlySpan<GCGenerationInfo> generations = gcMemory.GenerationInfo;
+    long gen0Bytes = generations.Length > 0 ? generations[0].SizeAfterBytes : 0;
+    long gen1Bytes = generations.Length > 1 ? generations[1].SizeAfterBytes : 0;
+    long gen2Bytes = generations.Length > 2 ? generations[2].SizeAfterBytes : 0;
+    long lohBytes = generations.Length > 3 ? generations[3].SizeAfterBytes : 0;
+    long pohBytes = generations.Length > 4 ? generations[4].SizeAfterBytes : 0;
+    StorageMetricsSnapshot storage = storageMetrics.GetSnapshot();
     OperationalMetricsSnapshot operations = operationalMetrics.GetSnapshot();
     string body = $"slimvector_build_info{{service=\"{observability.Value.ServiceName}\"}} 1\n" +
         $"# TYPE slimvector_open_collections gauge\nslimvector_open_collections {database.OpenCollectionCount}\n" +
         $"# TYPE slimvector_managed_memory_bytes gauge\nslimvector_managed_memory_bytes {memory}\n";
+    body += $"# TYPE slimvector_managed_allocated_bytes_total counter\nslimvector_managed_allocated_bytes_total {GC.GetTotalAllocatedBytes(precise: false)}\n" +
+        $"# TYPE slimvector_gc_collections_total counter\nslimvector_gc_collections_total{{generation=\"0\"}} {GC.CollectionCount(0)}\n" +
+        $"slimvector_gc_collections_total{{generation=\"1\"}} {GC.CollectionCount(1)}\n" +
+        $"slimvector_gc_collections_total{{generation=\"2\"}} {GC.CollectionCount(2)}\n" +
+        $"# TYPE slimvector_gc_pause_seconds_total counter\nslimvector_gc_pause_seconds_total {GC.GetTotalPauseDuration().TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n" +
+        $"# TYPE slimvector_gc_heap_bytes gauge\nslimvector_gc_heap_bytes{{generation=\"0\"}} {gen0Bytes}\n" +
+        $"slimvector_gc_heap_bytes{{generation=\"1\"}} {gen1Bytes}\n" +
+        $"slimvector_gc_heap_bytes{{generation=\"2\"}} {gen2Bytes}\n" +
+        $"slimvector_gc_heap_bytes{{generation=\"loh\"}} {lohBytes}\n" +
+        $"slimvector_gc_heap_bytes{{generation=\"poh\"}} {pohBytes}\n" +
+        $"# TYPE slimvector_storage_read_bytes_total counter\nslimvector_storage_read_bytes_total {storage.BytesRead}\n" +
+        $"# TYPE slimvector_storage_written_bytes_total counter\nslimvector_storage_written_bytes_total {storage.BytesWritten}\n" +
+        $"# TYPE slimvector_storage_durable_flushes_total counter\nslimvector_storage_durable_flushes_total {storage.DurableFlushes}\n";
     body += $"slimvector_search_requests_total {operations.Searches}\n" +
         $"slimvector_search_failures_total {operations.SearchFailures}\n" +
         $"slimvector_search_slow_total {operations.SlowSearches}\n" +

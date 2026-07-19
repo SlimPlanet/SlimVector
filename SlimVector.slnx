@@ -13,6 +13,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SlimVector.Api.Tests/SlimVector.Api.Tests.csproj" />
+    <Project Path="tests/SlimVector.Benchmarks.Tests/SlimVector.Benchmarks.Tests.csproj" />
     <Project Path="tests/SlimVector.Application.Tests/SlimVector.Application.Tests.csproj" />
     <Project Path="tests/SlimVector.Domain.Tests/SlimVector.Domain.Tests.csproj" />
     <Project Path="tests/SlimVector.Indexing.Tests/SlimVector.Indexing.Tests.csproj" />

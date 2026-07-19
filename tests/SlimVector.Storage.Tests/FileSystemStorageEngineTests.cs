@@ -5,6 +5,35 @@ namespace SlimVector.Storage.Tests;
 public sealed class FileSystemStorageEngineTests
 {
     [Fact]
+    public async Task LogicalIoMetricsAreMonotonicAndRecordDurableFlushes()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        StorageMetrics metrics = new();
+        CollectionDefinition definition = CollectionDefinition.Create("metrics", 2, DistanceMetric.Cosine);
+        using FileSystemStorageEngine storage = new(
+            new StorageSettings { Path = directory.Path, FlushToDisk = true },
+            metrics: metrics);
+
+        await storage.InitializeAsync(cancellationToken);
+        StorageMetricsSnapshot initialized = metrics.GetSnapshot();
+        await storage.CreateCollectionAsync(definition, cancellationToken);
+        await storage.AppendAsync(
+            definition.Id,
+            [StorageOperation.Upsert(Document("one", [1, 0]))],
+            cancellationToken);
+        StorageMetricsSnapshot written = metrics.GetSnapshot();
+        _ = await storage.LoadDocumentsAsync(definition.Id, cancellationToken);
+        StorageMetricsSnapshot read = metrics.GetSnapshot();
+
+        Assert.True(written.BytesWritten > initialized.BytesWritten);
+        Assert.True(written.DurableFlushes > initialized.DurableFlushes);
+        Assert.True(read.BytesRead > written.BytesRead);
+        Assert.True(read.BytesWritten >= written.BytesWritten);
+        Assert.True(read.DurableFlushes >= written.DurableFlushes);
+    }
+
+    [Fact]
     public async Task ImmutableSegmentsSurviveRestartAndTombstones()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;

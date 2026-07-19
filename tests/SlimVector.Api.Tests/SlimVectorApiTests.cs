@@ -67,6 +67,83 @@ public sealed class SlimVectorApiTests
             Assert.Contains("slimvector_index_persisted_snapshot_bytes{collection=\"articles\"", metrics, StringComparison.Ordinal);
             Assert.Contains("slimvector_raft_member_match_index{group=\"catalog\"", metrics, StringComparison.Ordinal);
             Assert.Contains("slimvector_raft_member_replication_lag{group=\"catalog\"", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_managed_allocated_bytes_total ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_collections_total{generation=\"0\"} ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_pause_seconds_total ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_heap_bytes{generation=\"0\"} ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_heap_bytes{generation=\"1\"} ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_heap_bytes{generation=\"2\"} ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_heap_bytes{generation=\"loh\"} ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_gc_heap_bytes{generation=\"poh\"} ", metrics, StringComparison.Ordinal);
+            Assert.True(ReadMetric(metrics, "slimvector_storage_written_bytes_total") > 0);
+            Assert.Contains("slimvector_storage_read_bytes_total ", metrics, StringComparison.Ordinal);
+            Assert.Contains("slimvector_storage_durable_flushes_total ", metrics, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath))
+            {
+                Directory.Delete(dataPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MetricsCountersAreMonotonicAcrossLogicalWriteReadAndDurableFlush()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string dataPath = Path.Combine(Path.GetTempPath(), "SlimVector.Api.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(
+                builder => builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["Storage:Path"] = dataPath,
+                        ["Storage:FlushToDisk"] = "true",
+                    })));
+            using HttpClient client = factory.CreateClient();
+            string before = await client.GetStringAsync("/metrics", cancellationToken);
+
+            using HttpResponseMessage create = await client.PostAsJsonAsync(
+                "/api/v1/collections",
+                new CreateCollectionRequest { Name = "metric-deltas", Dimension = 2 },
+                ApiJsonContext.Default.CreateCollectionRequest,
+                cancellationToken);
+            create.EnsureSuccessStatusCode();
+            using HttpResponseMessage add = await client.PostAsJsonAsync(
+                "/api/v1/collections/metric-deltas/documents/add",
+                new DocumentBatchRequest
+                {
+                    Documents = [new DocumentInput { Id = "one", Text = "metric probe", Vector = [1, 0] }],
+                },
+                ApiJsonContext.Default.DocumentBatchRequest,
+                cancellationToken);
+            add.EnsureSuccessStatusCode();
+            string afterWrite = await client.GetStringAsync("/metrics", cancellationToken);
+
+            IStorageEngine storage = factory.Services.GetRequiredService<IStorageEngine>();
+            CollectionDefinition definition = Assert.IsType<CollectionDefinition>(
+                await storage.GetCollectionAsync("metric-deltas", cancellationToken));
+            _ = await storage.LoadDocumentsAsync(definition.Id, cancellationToken);
+            string afterRead = await client.GetStringAsync("/metrics", cancellationToken);
+
+            Assert.True(ReadMetric(afterWrite, "slimvector_storage_written_bytes_total") >
+                ReadMetric(before, "slimvector_storage_written_bytes_total"));
+            Assert.True(ReadMetric(afterWrite, "slimvector_storage_durable_flushes_total") >
+                ReadMetric(before, "slimvector_storage_durable_flushes_total"));
+            Assert.True(ReadMetric(afterRead, "slimvector_storage_read_bytes_total") >
+                ReadMetric(afterWrite, "slimvector_storage_read_bytes_total"));
+            Assert.True(ReadMetric(afterRead, "slimvector_managed_allocated_bytes_total") >=
+                ReadMetric(before, "slimvector_managed_allocated_bytes_total"));
+            for (int generation = 0; generation <= 2; generation++)
+            {
+                string metric = $"slimvector_gc_collections_total{{generation=\"{generation}\"}}";
+                Assert.True(ReadMetric(afterRead, metric) >= ReadMetric(before, metric));
+            }
+
+            Assert.True(ReadDoubleMetric(afterRead, "slimvector_gc_pause_seconds_total") >=
+                ReadDoubleMetric(before, "slimvector_gc_pause_seconds_total"));
         }
         finally
         {
@@ -467,6 +544,12 @@ public sealed class SlimVectorApiTests
     {
         string line = metrics.Split('\n').Single(candidate => candidate.StartsWith(name + " ", StringComparison.Ordinal));
         return long.Parse(line.AsSpan(name.Length + 1), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static double ReadDoubleMetric(string metrics, string name)
+    {
+        string line = metrics.Split('\n').Single(candidate => candidate.StartsWith(name + " ", StringComparison.Ordinal));
+        return double.Parse(line.AsSpan(name.Length + 1), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private sealed class RedirectingConsensus : IConsensusCoordinator

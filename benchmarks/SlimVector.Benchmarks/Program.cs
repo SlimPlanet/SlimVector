@@ -10,7 +10,7 @@ internal static class Program
         if (marker >= 0)
         {
             string[] runnerArguments = args.Where((_, index) => index != marker).ToArray();
-            return EndToEndBenchmarkRunner.RunAsync(runnerArguments).GetAwaiter().GetResult();
+            return ReliableBenchmarkRunner.RunAsync(runnerArguments).GetAwaiter().GetResult();
         }
 
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

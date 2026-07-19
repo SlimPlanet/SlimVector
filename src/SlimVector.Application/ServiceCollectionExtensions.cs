@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<OperationalMetrics>();
+        services.AddSingleton<StorageMetrics>();
         services.AddSingleton<IStorageEngine>(provider =>
         {
             StorageOptions options = provider.GetRequiredService<IOptions<StorageOptions>>().Value;
@@ -72,7 +73,8 @@ public static class ServiceCollectionExtensions
                     FlushToDisk = options.FlushToDisk,
                     MaximumSegmentsBeforeCompaction = options.MaximumSegmentsBeforeCompaction,
                 },
-                provider.GetRequiredService<TimeProvider>());
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetRequiredService<StorageMetrics>());
         });
         services.AddSingleton(provider =>
         {
