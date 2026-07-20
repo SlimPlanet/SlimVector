@@ -140,6 +140,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
             vectorIndex,
             _timeProvider,
             _metadataIndexOptions.IndexByDefault);
+        definition = definition with { Placement = _consensus.CreateInitialPlacement(definition.Id) };
         await _consensus.UpsertCollectionAsync(definition, cancellationToken).ConfigureAwait(false);
         return definition;
     }
@@ -230,7 +231,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
     {
         CollectionDefinition definition = await ResolveRequiredCollectionAsync(collectionName, ReadConsistency.Leader, cancellationToken)
             .ConfigureAwait(false);
-        await _consensus.ApplyReadBarrierAsync(definition.Id, ReadConsistency.Leader, cancellationToken).ConfigureAwait(false);
+        await _consensus.ApplyReadBarriersAsync(definition, ReadConsistency.Leader, cancellationToken).ConfigureAwait(false);
         return await ExecuteAsync(collectionName, runtime => runtime.GetDocumentsAsync(ids, offset, limit), cancellationToken)
             .ConfigureAwait(false);
     }
@@ -239,7 +240,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
     {
         CollectionDefinition definition = await ResolveRequiredCollectionAsync(collectionName, ReadConsistency.Leader, cancellationToken)
             .ConfigureAwait(false);
-        await _consensus.ApplyReadBarrierAsync(definition.Id, ReadConsistency.Leader, cancellationToken).ConfigureAwait(false);
+        await _consensus.ApplyReadBarriersAsync(definition, ReadConsistency.Leader, cancellationToken).ConfigureAwait(false);
         return await ExecuteAsync(collectionName, static runtime => runtime.CountAsync(), cancellationToken).ConfigureAwait(false);
     }
 
@@ -256,7 +257,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase
                 .ConfigureAwait(false);
             DomainValidation.ValidateSearch(request, definition.Dimension, _vectorIndexOptions.MaximumSearchLimit);
             ValidateFilterDepth(request.Filter, _metadataIndexOptions.MaximumFilterDepth);
-            await _consensus.ApplyReadBarrierAsync(definition.Id, request.Consistency, cancellationToken).ConfigureAwait(false);
+            await _consensus.ApplyReadBarriersAsync(definition, request.Consistency, cancellationToken).ConfigureAwait(false);
             SearchResponse response = await ExecuteAsync(collectionName, runtime => runtime.SearchAsync(request), cancellationToken)
                 .ConfigureAwait(false);
             succeeded = true;

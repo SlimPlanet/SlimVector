@@ -4,13 +4,17 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json.Serialization.Metadata;
+using System.Threading.Channels;
 using SlimVector.Domain;
 
 namespace SlimVector.Benchmarks;
 
 internal static partial class ReliableBenchmarkWorker
 {
-    private static async Task<BenchmarkIterationResult> RunServerAsync(BenchmarkWorkerJob job, bool controlsOnly)
+    private static async Task<BenchmarkIterationResult> RunServerAsync(
+        BenchmarkWorkerJob job,
+        bool controlsOnly,
+        bool saturationOnly = false)
     {
         ReliableIndexScenario scenario = job.Scenario ?? new ReliableIndexScenario
         {
@@ -51,9 +55,43 @@ internal static partial class ReliableBenchmarkWorker
 
             await CreateServerCollectionAsync(client, job.Profile, scenario, server, storagePath, operations).ConfigureAwait(false);
             DocumentRecord[] documents = dataset.Documents[..Math.Min(job.Profile.ServerDocumentCount, dataset.Documents.Length)];
-            if (controlsOnly)
+            if (saturationOnly)
             {
                 await InsertServerDocumentsAsync(client, documents, server, storagePath, operations: null).ConfigureAwait(false);
+                SaturationResult saturation = await RunServerSaturationAsync(
+                    client,
+                    server,
+                    storagePath,
+                    dataset.Queries,
+                    job.Profile).ConfigureAwait(false);
+                operations.AddRange(saturation.Operations);
+                return new BenchmarkIterationResult
+                {
+                    Scenario = $"Server-Saturation-{scenario.Name}-{job.StorageMode}",
+                    IndexKind = scenario.Kind.ToString(),
+                    Quantization = scenario.Quantization.ToString(),
+                    SearchTuning = scenario.SearchTuning,
+                    StorageMode = job.StorageMode,
+                    Iteration = job.Iteration,
+                    ProcessId = Environment.ProcessId,
+                    SuccessCount = saturation.Successes,
+                    ErrorCount = saturation.Errors,
+                    ExpectedRejectionCount = saturation.Rejections,
+                    QueueSaturationRejections = saturation.QueueRejections,
+                    CongestionRejections = saturation.CongestionRejections,
+                    ContractualRateLimitRejections = saturation.RateLimitRejections,
+                    OfferedCount = saturation.Offered,
+                    CompletedCount = saturation.Completed,
+                    MeetsSaturationSlo = saturation.Operations.All(static operation => operation.MeetsSaturationSlo == true),
+                    CoordinatedOmissionCorrected = true,
+                    MaxSustainableQps = saturation.MaxSustainableQps,
+                    Operations = operations,
+                };
+            }
+
+            if (controlsOnly)
+            {
+                await InsertServerDocumentsAsync(client, documents[..1], server, storagePath, operations: null).ConfigureAwait(false);
                 await CreatePressureCollectionsAsync(client, job.Profile, scenario, count: 8).ConfigureAwait(false);
                 ServerControlResult controls = await RunServerControlsAsync(
                     client,
@@ -468,7 +506,11 @@ internal static partial class ReliableBenchmarkWorker
         OperationIterationResult pressureOperation = pressureMeasurement.Complete(
             pressure.Select(static result => result.LatencyMilliseconds).ToArray(),
             expectedRejectionCount: queue + congestion,
-            runtimeAfter: pressureAfter);
+            runtimeAfter: pressureAfter) with
+        {
+            QueueSaturationRejections = queue,
+            CongestionRejections = congestion,
+        };
 
         RuntimeMetricsSnapshot rateBefore = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement rateMeasurement = new(
@@ -508,7 +550,10 @@ internal static partial class ReliableBenchmarkWorker
         OperationIterationResult rateOperation = rateMeasurement.Complete(
             rateLatencies,
             expectedRejectionCount: rateLimit,
-            runtimeAfter: await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false));
+            runtimeAfter: await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false)) with
+        {
+            ContractualRateLimitRejections = rateLimit,
+        };
         if (queue + congestion == 0 || rateLimit == 0)
         {
             throw new InvalidOperationException(
@@ -522,6 +567,223 @@ internal static partial class ReliableBenchmarkWorker
             queue,
             congestion,
             rateLimit);
+    }
+
+    private static async Task<SaturationResult> RunServerSaturationAsync(
+        HttpClient client,
+        Process server,
+        string storagePath,
+        IReadOnlyList<float[]> queries,
+        ReliableBenchmarkProfile profile)
+    {
+        if (profile.SaturationWarmupSeconds > 0)
+        {
+            _ = await RunOpenLoopStageAsync(
+                client,
+                server,
+                storagePath,
+                queries,
+                profile.TopK,
+                profile.SaturationRatesPerSecond[0],
+                profile.SaturationWarmupSeconds,
+                profile,
+                "SaturationWarmup").ConfigureAwait(false);
+        }
+
+        List<OperationIterationResult> operations = [];
+        foreach (int rate in profile.SaturationRatesPerSecond)
+        {
+            OpenLoopStageResult stage = await RunOpenLoopStageAsync(
+                client,
+                server,
+                storagePath,
+                queries,
+                profile.TopK,
+                rate,
+                profile.SaturationStageSeconds,
+                profile,
+                $"SaturationOpenLoop-{rate.ToString(CultureInfo.InvariantCulture)}qps").ConfigureAwait(false);
+            operations.Add(stage.Operation);
+        }
+
+        OperationIterationResult[] measured = operations.ToArray();
+        double? maximumSustainable = measured
+            .Where(static operation => operation.MeetsSaturationSlo == true)
+            .Max(static operation => operation.OfferedRatePerSecond);
+        return new SaturationResult(
+            measured,
+            measured.Sum(static operation => operation.CompletedCount - operation.ErrorCount - operation.ExpectedRejectionCount),
+            measured.Sum(static operation => operation.ErrorCount),
+            measured.Sum(static operation => operation.ExpectedRejectionCount),
+            measured.Sum(static operation => operation.QueueSaturationRejections),
+            measured.Sum(static operation => operation.CongestionRejections),
+            measured.Sum(static operation => operation.ContractualRateLimitRejections),
+            measured.Sum(static operation => operation.OfferedCount),
+            measured.Sum(static operation => operation.CompletedCount),
+            maximumSustainable);
+    }
+
+    private static async Task<OpenLoopStageResult> RunOpenLoopStageAsync(
+        HttpClient client,
+        Process server,
+        string storagePath,
+        IReadOnlyList<float[]> queries,
+        int topK,
+        int offeredRate,
+        int durationSeconds,
+        ReliableBenchmarkProfile profile,
+        string operationName)
+    {
+        int offered = checked(offeredRate * durationSeconds);
+        double[] latencies = new double[offered];
+        int successes = 0;
+        int queueRejections = 0;
+        int congestionRejections = 0;
+        int rateLimitRejections = 0;
+        int errors = 0;
+        RuntimeMetricsSnapshot before = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
+        using ReliableOperationMeasurement measurement = new(
+            operationName,
+            offered,
+            server,
+            latencyUnit: "scheduled-http-request",
+            artifactPath: storagePath,
+            runtimeBefore: before);
+        Channel<ScheduledRequest> channel = Channel.CreateUnbounded<ScheduledRequest>(new UnboundedChannelOptions
+        {
+            SingleReader = false,
+            SingleWriter = true,
+            AllowSynchronousContinuations = false,
+        });
+        int workerCount = Math.Clamp(Environment.ProcessorCount * 8, 32, 256);
+        Task[] workers = Enumerable.Range(0, workerCount).Select(async _ =>
+        {
+            await foreach (ScheduledRequest scheduled in channel.Reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                try
+                {
+                    ServerQueryRequest request = new()
+                    {
+                        Vector = queries[scheduled.Sequence % queries.Count],
+                        Mode = SearchMode.Vector,
+                        Limit = topK,
+                        Include = [],
+                    };
+                    using HttpResponseMessage response = await PostJsonAsync(
+                        client,
+                        "/api/v1/collections/server-benchmark/documents/query",
+                        request,
+                        BenchmarkJsonContext.Default.ServerQueryRequest,
+                        "benchmark-saturation").ConfigureAwait(false);
+                    latencies[scheduled.Sequence] = Stopwatch.GetElapsedTime(
+                        scheduled.IntendedTimestamp,
+                        Stopwatch.GetTimestamp()).TotalMilliseconds;
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Interlocked.Increment(ref successes);
+                    }
+                    else if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                    {
+                        string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        string? kind = response.Headers.TryGetValues(
+                            "X-SlimVector-RateLimit-Kind",
+                            out IEnumerable<string>? kinds)
+                            ? kinds.FirstOrDefault()
+                            : null;
+                        if (body.Contains("queue_saturated", StringComparison.Ordinal))
+                        {
+                            Interlocked.Increment(ref queueRejections);
+                        }
+                        else if (string.Equals(kind, "congestion", StringComparison.Ordinal))
+                        {
+                            Interlocked.Increment(ref congestionRejections);
+                        }
+                        else if (string.Equals(kind, "contractual", StringComparison.Ordinal))
+                        {
+                            Interlocked.Increment(ref rateLimitRejections);
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref errors);
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref errors);
+                    }
+                }
+                catch (HttpRequestException)
+                {
+                    latencies[scheduled.Sequence] = Stopwatch.GetElapsedTime(
+                        scheduled.IntendedTimestamp,
+                        Stopwatch.GetTimestamp()).TotalMilliseconds;
+                    Interlocked.Increment(ref errors);
+                }
+                catch (TaskCanceledException)
+                {
+                    latencies[scheduled.Sequence] = Stopwatch.GetElapsedTime(
+                        scheduled.IntendedTimestamp,
+                        Stopwatch.GetTimestamp()).TotalMilliseconds;
+                    Interlocked.Increment(ref errors);
+                }
+            }
+        }).ToArray();
+
+        long start = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 10;
+        double ticksPerRequest = Stopwatch.Frequency / (double)offeredRate;
+        for (int sequence = 0; sequence < offered; sequence++)
+        {
+            long intended = start + (long)Math.Round(sequence * ticksPerRequest);
+            await DelayUntilAsync(intended).ConfigureAwait(false);
+            await channel.Writer.WriteAsync(new ScheduledRequest(sequence, intended)).ConfigureAwait(false);
+        }
+
+        channel.Writer.Complete();
+        await Task.WhenAll(workers).ConfigureAwait(false);
+        int rejections = queueRejections + congestionRejections + rateLimitRejections;
+        int completed = successes + rejections + errors;
+        double? p99 = ReliableBenchmarkStatistics.QualifiedPercentile(latencies, 0.99);
+        bool meetsSlo = errors == 0 && completed == offered &&
+            rejections / (double)offered <= profile.SaturationMaximumRejectionRatio &&
+            p99.HasValue && p99.Value <= profile.SaturationMaximumP99Milliseconds;
+        OperationIterationResult operation = measurement.Complete(
+            latencies,
+            errorCount: errors,
+            expectedRejectionCount: rejections,
+            runtimeAfter: await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false)) with
+        {
+            OfferedCount = offered,
+            CompletedCount = completed,
+            OfferedRatePerSecond = offeredRate,
+            MeetsSaturationSlo = meetsSlo,
+            CoordinatedOmissionCorrected = true,
+            QueueSaturationRejections = queueRejections,
+            CongestionRejections = congestionRejections,
+            ContractualRateLimitRejections = rateLimitRejections,
+        };
+        return new OpenLoopStageResult(operation);
+    }
+
+    private static async Task DelayUntilAsync(long intendedTimestamp)
+    {
+        while (true)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (now >= intendedTimestamp)
+            {
+                return;
+            }
+
+            double remainingMilliseconds = (intendedTimestamp - now) * 1_000D / Stopwatch.Frequency;
+            if (remainingMilliseconds > 2)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(remainingMilliseconds - 1)).ConfigureAwait(false);
+            }
+            else
+            {
+                await Task.Yield();
+            }
+        }
     }
 
     private static async Task<RuntimeMetricsSnapshot> ScrapeRuntimeMetricsAsync(HttpClient client)
@@ -685,6 +947,22 @@ internal static partial class ReliableBenchmarkWorker
     }
 
     private sealed record ControlRequestResult(string Kind, double LatencyMilliseconds);
+
+    private readonly record struct ScheduledRequest(int Sequence, long IntendedTimestamp);
+
+    private sealed record OpenLoopStageResult(OperationIterationResult Operation);
+
+    private sealed record SaturationResult(
+        IReadOnlyList<OperationIterationResult> Operations,
+        int Successes,
+        int Errors,
+        int Rejections,
+        int QueueRejections,
+        int CongestionRejections,
+        int RateLimitRejections,
+        int Offered,
+        int Completed,
+        double? MaxSustainableQps);
 
     private sealed record ServerControlResult(
         IReadOnlyList<OperationIterationResult> Operations,

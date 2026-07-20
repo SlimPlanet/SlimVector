@@ -55,6 +55,10 @@ public sealed partial class DataBatchCommand
     public RaftCollectionDefinition Collection { get; set; } = new();
 
     public RaftStorageOperation[] Operations { get; set; } = [];
+
+    public int ShardId { get; set; }
+
+    public long RoutingEpoch { get; set; }
 }
 
 [MemoryPackable]
@@ -117,6 +121,42 @@ public sealed partial class RaftCollectionDefinition
     public int DiskAnnCachePages { get; set; }
 
     public int DiskAnnRetainedGenerations { get; set; }
+
+    public RaftCollectionPlacement? Placement { get; set; }
+}
+
+[MemoryPackable]
+public sealed partial class RaftCollectionPlacement
+{
+    public long Epoch { get; set; }
+
+    public int VirtualShardCount { get; set; }
+
+    public string? ShardKey { get; set; }
+
+    public RaftShardPlacement[] Shards { get; set; } = [];
+}
+
+[MemoryPackable]
+public sealed partial class RaftShardPlacement
+{
+    public int ShardId { get; set; }
+
+    public string DataGroupId { get; set; } = string.Empty;
+
+    public string[] ReplicaSet { get; set; } = [];
+
+    public ShardPlacementState State { get; set; }
+
+    public string? SourceDataGroupId { get; set; }
+
+    public string? TargetDataGroupId { get; set; }
+
+    public Guid? OperationId { get; set; }
+
+    public long SnapshotVersion { get; set; }
+
+    public long ReplayedThroughVersion { get; set; }
 }
 
 [MemoryPackable]

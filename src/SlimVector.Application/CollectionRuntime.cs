@@ -344,7 +344,7 @@ internal sealed class CollectionRuntime : IDisposable
         if (storageOperations.Count > 0)
         {
             await _writeScheduler
-                .EnqueueAsync(Definition, storageOperations, clientId, cancellationToken)
+                .EnqueueAsync(Definition, storageOperations, clientId, atomic, cancellationToken)
                 .ConfigureAwait(false);
             _documents = working;
             _mutationCount += storageOperations.Count;
@@ -468,7 +468,7 @@ internal sealed class CollectionRuntime : IDisposable
     private SearchResponse SearchCore(SearchRequest request)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
-        IReadOnlyList<HybridRankedResult> ranked = _index.Search(request, _candidateMultiplier);
+        IReadOnlyList<HybridRankedResult> ranked = SearchWithPlacement(request);
         List<SearchHit> hits = new(ranked.Count);
         foreach (HybridRankedResult result in ranked)
         {
@@ -496,6 +496,40 @@ internal sealed class CollectionRuntime : IDisposable
             Hits = hits,
             TookMicroseconds = (long)(stopwatch.Elapsed.TotalMilliseconds * 1_000),
         };
+    }
+
+    private IReadOnlyList<HybridRankedResult> SearchWithPlacement(SearchRequest request)
+    {
+        CollectionPlacement? placement = Definition.Placement;
+        if (request.Mode != SearchMode.Vector || placement is null ||
+            placement.ReadRoutes().Select(static route => route.DataGroupId).Distinct(StringComparer.Ordinal).Take(2).Count() < 2)
+        {
+            return _index.Search(request, _candidateMultiplier);
+        }
+
+        Dictionary<string, HashSet<string>> candidatesByGroup = new(StringComparer.Ordinal);
+        foreach (DocumentRecord document in _documents.Values)
+        {
+            ShardRoute route = placement.Resolve(Definition.Id, document.Id);
+            if (!candidatesByGroup.TryGetValue(route.DataGroupId, out HashSet<string>? candidates))
+            {
+                candidates = new HashSet<string>(StringComparer.Ordinal);
+                candidatesByGroup.Add(route.DataGroupId, candidates);
+            }
+
+            candidates.Add(document.Id);
+        }
+
+        _metrics.RecordSearchFanOut(candidatesByGroup.Count);
+
+        return candidatesByGroup
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .SelectMany(pair => _index.Search(request, _candidateMultiplier, pair.Value))
+            .OrderByDescending(static result => result.Score)
+            .ThenBy(static result => result.Id, StringComparer.Ordinal)
+            .Take(request.Limit)
+            .Select(static (result, index) => result with { VectorRank = index + 1 })
+            .ToArray();
     }
 
     private static CollectionSearchIndex BuildIndex(
@@ -745,7 +779,10 @@ internal sealed class CollectionRuntime : IDisposable
 
         recall /= samples.Length;
         double gain = activeTicks <= 0 ? 0 : (activeTicks - candidateTicks) / (double)activeTicks;
-        bool accepted = recall >= _autoIndexOptions.MinimumRecall && gain >= _autoIndexOptions.MinimumPerformanceGain;
+        bool recallAccepted = _autoIndexOptions.MinimumRecall <= 0 || recall >= _autoIndexOptions.MinimumRecall;
+        bool performanceAccepted = _autoIndexOptions.MinimumPerformanceGain <= 0 ||
+            gain >= _autoIndexOptions.MinimumPerformanceGain;
+        bool accepted = recallAccepted && performanceAccepted;
         string reason = FormattableString.Invariant(
             $"validation recall={recall:F4}, measuredGain={gain:P2}, samples={samples.Length}");
         return new IndexValidationResult(accepted, recall, gain, reason);

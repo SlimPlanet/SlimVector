@@ -2,17 +2,17 @@
 
 ## Vector indexes
 
-SlimVector keeps a collection whole on one Raft data group; it does not shard an individual collection. Every vector index implements the same mutation, filtered-search, persistence, and rebuild contract.
+SlimVector assigns every collection a stable set of virtual shards and persists their mapping to physical Raft data groups. Every vector index implements the same mutation, filtered-search, persistence, and rebuild contract; a node merges the shard materialization into one comparable search result.
 
 | Kind | Search | Persistence and updates | Best fit |
 | --- | --- | --- | --- |
 | `flat` | Exact bounded top-K using `System.Numerics.Vector` for cosine, dot product, and L2 | Combined index snapshot; online upsert/delete | Small sets or exact recall |
 | `hnsw` | Deterministic multi-layer graph with configurable `M`, construction/search breadth | Persistent graph, logical deletes, deterministic rebuild | Read-heavy medium sets in RAM |
-| `ivfFlat` | Deterministic trained centroids, postings, configurable `nprobe` | Versioned centroid/posting snapshot; online delta mutations | Large sets where full vectors fit |
-| `ivfPq` | IVF over residual product-quantization codes, followed by exact reranking | Versioned IVF/PQ codebooks and codes | Large, memory-sensitive sets |
-| `diskAnn` | Vamana-style graph traversed from fixed SSD records with bounded beam/search list | Checksummed immutable generations, bounded LRU page cache, in-memory delta, merge threshold, rollback | Very large sets with limited RAM |
+| `ivfFlat` | Deterministic trained centroids, postings, configurable `nprobe`; exact Flat fallback before the training floor | Versioned lifecycle and centroid/posting snapshot; online delta mutations | Large sets where full vectors fit |
+| `ivfPq` | IVFADC over residual product-quantization codes, followed by exact reranking; exact fallback while collecting training data | Versioned lifecycle, IVF/PQ codebooks and codes | Large, memory-sensitive sets |
+| `diskAnn` | Medoid-entry Vamana graph with robust pruning and bounded beam/search list | Checksummed immutable generations, preallocated concurrent page cache, pooled search contexts, in-memory delta, rollback | Very large sets with limited RAM |
 
-IVF training uses a fixed seed and deterministic ordering so replicas and repeatable benchmarks build equivalent codebooks. IVF-PQ requires `dimension % pqSubvectorCount == 0`. Approximate results should always be evaluated against Flat on a representative workload; `efSearch`, `nprobe`, rerank multiplier, and DiskANN search-list size exchange latency for recall.
+IVF training uses a fixed seed and deterministic ordering so replicas and repeatable benchmarks build equivalent codebooks. It requires at least 39 representative points per requested IVF/PQ centroid; smaller collections remain exact instead of training a degenerate index on their first upsert. IVF-PQ requires `dimension % pqSubvectorCount == 0`. Approximate results should always be evaluated against Flat on a representative workload; `efSearch`, `nprobe`, rerank multiplier, and DiskANN search-list size exchange latency for recall.
 
 Scalar quantization is selected independently with `quantization: float32|float16|int8` where supported. Flat stores real Float16 or calibrated per-dimension Int8 candidate data and reranks a configurable candidate set with originals. IVF-PQ supplies its own compression. HNSW and IVF-Flat currently retain Float32 graph/posting vectors; asking for scalar quantization does not silently change their algorithm.
 

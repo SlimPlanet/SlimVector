@@ -43,6 +43,8 @@ public sealed class MultiRaftNode : IAsyncDisposable
 
     public IReadOnlyCollection<string> GroupIds => _groups.Keys;
 
+    public IReadOnlyList<string> DataGroupIds => _dataGroupIds;
+
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
         await Task.WhenAll(_groups.Values.Select(group => group.StartAsync(cancellationToken).AsTask())).ConfigureAwait(false);
@@ -73,6 +75,25 @@ public sealed class MultiRaftNode : IAsyncDisposable
         return _groups[expectedGroupId].ReplicateAsync(command, cancellationToken);
     }
 
+    public ValueTask ReplicateDataGroupAsync(
+        string groupId,
+        RaftCommandEnvelope command,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_groups.TryGetValue(groupId, out RaftGroupNode? group) ||
+            string.Equals(groupId, CatalogGroupId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"Data group '{groupId}' is not hosted by this node.", nameof(groupId));
+        }
+
+        if (!string.Equals(command.GroupId, groupId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"Command targets '{command.GroupId}', not '{groupId}'.", nameof(command));
+        }
+
+        return group.ReplicateAsync(command, cancellationToken);
+    }
+
     public ValueTask ApplyReadBarrierAsync(
         Guid? collectionId,
         ReadConsistency consistency,
@@ -80,6 +101,16 @@ public sealed class MultiRaftNode : IAsyncDisposable
     {
         string groupId = collectionId.HasValue ? GetDataGroupId(collectionId.Value) : CatalogGroupId;
         return _groups[groupId].ApplyReadBarrierAsync(consistency, cancellationToken);
+    }
+
+    public async ValueTask ApplyReadBarriersAsync(
+        IEnumerable<string> groupIds,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default)
+    {
+        string[] groups = groupIds.Distinct(StringComparer.Ordinal).ToArray();
+        await Task.WhenAll(groups.Select(groupId => _groups[groupId]
+            .ApplyReadBarrierAsync(consistency, cancellationToken).AsTask())).ConfigureAwait(false);
     }
 
     public RaftGroupNode GetGroup(string groupId) => _groups.TryGetValue(groupId, out RaftGroupNode? group)

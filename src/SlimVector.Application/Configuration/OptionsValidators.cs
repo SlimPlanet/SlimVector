@@ -322,6 +322,21 @@ internal sealed class ClusterMembershipOptionsValidator : IValidateOptions<Clust
     }
 }
 
+internal sealed class RebalancingOptionsValidator : IValidateOptions<RebalancingOptions>
+{
+    public ValidateOptionsResult Validate(string? name, RebalancingOptions options)
+    {
+        List<string> failures = [];
+        if (options.MaximumConcurrentMoves is < 1 or > 64 || options.ReconcileInterval <= TimeSpan.Zero ||
+            options.Cooldown < TimeSpan.Zero || options.MinimumImprovementRatio is < 0 or > 1)
+        {
+            failures.Add("Rebalancing move limits, intervals, cooldown, or improvement ratio are invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
 internal sealed class GeoReplicationOptionsValidator : IValidateOptions<GeoReplicationOptions>
 {
     public ValidateOptionsResult Validate(string? name, GeoReplicationOptions options)

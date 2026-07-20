@@ -1,4 +1,6 @@
 using System.Text.Json;
+using SlimVector.Domain;
+using SlimVector.Indexing;
 namespace SlimVector.Benchmarks.Tests;
 
 public sealed class ReliableBenchmarkTests
@@ -45,6 +47,42 @@ public sealed class ReliableBenchmarkTests
         Assert.Equal([BenchmarkStorageMode.Buffered, BenchmarkStorageMode.Durable], ReliableBenchmarkRunner.ParseStorageModes("both"));
         Assert.Equal([0.90, 0.95, 0.99], ReliableBenchmarkRunner.ParseRecallThresholds(".99,.90,.95"));
         Assert.Throws<ArgumentException>(() => ReliableBenchmarkRunner.ParseRecallThresholds("0"));
+        ReliableBenchmarkProfile saturation = ReliableBenchmarkRunner.ParseProfile("Saturation");
+        Assert.Equal([50, 100, 200, 400, 800, 1_600], saturation.SaturationRatesPerSecond);
+        Assert.Equal(30, saturation.SaturationStageSeconds);
+        Assert.Equal(100, saturation.SaturationMaximumP99Milliseconds);
+        Assert.Equal(0.01, saturation.SaturationMaximumRejectionRatio);
+        Assert.Equal([25, 50], ReliableBenchmarkRunner.ParsePositiveIntList("50,25,50", [], "--rates"));
+        Assert.Throws<ArgumentException>(() => ReliableBenchmarkRunner.ParsePositiveIntList("0", [], "--rates"));
+    }
+
+    [Fact]
+    public void SmokeIvfConfigurationsContainEnoughVectorsToTrain()
+    {
+        ReliableBenchmarkProfile smoke = ReliableBenchmarkRunner.ParseProfile("Smoke");
+        CollectionDefinition ivfFlat = ReliableBenchmarkWorker.Definition(smoke, new ReliableIndexScenario
+        {
+            Name = "IvfFlat",
+            Kind = VectorIndexKind.IvfFlat,
+            Quantization = VectorQuantizationKind.Float32,
+            SearchTuning = 4,
+        });
+        CollectionDefinition ivfPq = ReliableBenchmarkWorker.Definition(smoke, new ReliableIndexScenario
+        {
+            Name = "IvfPq",
+            Kind = VectorIndexKind.IvfPq,
+            Quantization = VectorQuantizationKind.Float32,
+            SearchTuning = 4,
+        });
+
+        Assert.True(smoke.VectorCount >= ivfFlat.VectorIndex.IvfListCount * IvfFlatIndex.MinimumTrainingPointsPerCentroid);
+        Assert.True(smoke.VectorCount >= Math.Max(
+            ivfPq.VectorIndex.IvfListCount,
+            ivfPq.VectorIndex.PqCentroidCount) * IvfPqIndex.MinimumTrainingPointsPerCentroid);
+        Assert.All(
+            ReliableBenchmarkRunner.CreateScenarios(smoke)
+                .Where(static scenario => scenario.Kind is VectorIndexKind.IvfFlat or VectorIndexKind.IvfPq),
+            scenario => Assert.True(scenario.SearchTuning <= ivfFlat.VectorIndex.IvfListCount));
     }
 
     [Fact]
@@ -96,6 +134,9 @@ public sealed class ReliableBenchmarkTests
             ProcessId = 42,
             ErrorCount = 1,
             ExpectedRejectionCount = 3,
+            QueueSaturationRejections = 1,
+            CongestionRejections = 1,
+            ContractualRateLimitRejections = 1,
             Operations =
             [
                 new OperationIterationResult
@@ -111,6 +152,14 @@ public sealed class ReliableBenchmarkTests
                     NormalizedCpuUtilization = 0.01,
                     ErrorCount = 1,
                     ExpectedRejectionCount = 3,
+                    QueueSaturationRejections = 1,
+                    CongestionRejections = 1,
+                    ContractualRateLimitRejections = 1,
+                    OfferedCount = 100,
+                    CompletedCount = 100,
+                    OfferedRatePerSecond = 50,
+                    MeetsSaturationSlo = true,
+                    CoordinatedOmissionCorrected = true,
                 },
             ],
         };
@@ -118,9 +167,18 @@ public sealed class ReliableBenchmarkTests
         BenchmarkScenarioAggregate aggregate = Assert.Single(ReliableBenchmarkRunner.Aggregate([iteration]));
         Assert.Equal(1, aggregate.ErrorCount);
         Assert.Equal(3, aggregate.ExpectedRejectionCount);
+        Assert.Equal(1, aggregate.QueueSaturationRejections);
+        Assert.Equal(1, aggregate.CongestionRejections);
+        Assert.Equal(1, aggregate.ContractualRateLimitRejections);
         OperationAggregate operation = Assert.Single(aggregate.Operations);
         Assert.Null(operation.P50Milliseconds);
         Assert.Null(operation.ManagedBytesDelta);
+        Assert.Equal(1, operation.QueueSaturationRejections);
+        Assert.Equal(1, operation.CongestionRejections);
+        Assert.Equal(1, operation.ContractualRateLimitRejections);
+        Assert.Equal(50, operation.OfferedRatePerSecond);
+        Assert.True(operation.MeetsSaturationSlo);
+        Assert.True(operation.CoordinatedOmissionCorrected);
     }
 
     [Fact]

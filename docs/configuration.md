@@ -15,6 +15,7 @@ Complete examples are [single-node appsettings](../src/SlimVector.Api/appsetting
 | `DiskAnn` | artifact path, degree/search/beam, delta merge, page/cache sizes, retained generations |
 | `TextIndex`, `MetadataIndex` | BM25 limits/scoring and filter indexing/depth |
 | `Raft`, `ClusterMembership` | bootstrap or joining mode, group count, election/snapshot/transport, warm-up/lag/timeouts/minimum voters |
+| `Rebalancing` | controller enablement, manual approval, move concurrency, reconciliation/cooldown intervals and minimum improvement |
 | `AdaptiveBatching`, `Backpressure` | bounded command/byte/window targets, global/client/collection/group queues and concurrency |
 | `RateLimit` | global/client/collection/read/write/admin token buckets, reserved read/write fractions, adaptive recovery |
 | `Backup`, `GeoReplication` | provider/schedule/retention/encryption/S3; separate signed DR outbox/receiver |
@@ -27,6 +28,10 @@ The HNSW/IVF/PQ/DiskANN sections populate a new collection's configuration when 
 Initial cluster voters set `Raft:JoinExistingCluster=false` and provide at least three unique `Members` plus matching `MemberApiEndpoints`, including the local endpoint. A new server sets `JoinExistingCluster=true` with both arrays empty. It starts non-voting and is installed into each group only through the authenticated membership API and Raft consensus.
 
 Critical startup failures include invalid/duplicate topology, missing local or API mappings, exhausted port offsets, bad election/heartbeat ratios, empty Auto allowed sets, non-divisible fixed IVF-PQ dimensions, invalid DiskANN page/cache/retention bounds, inconsistent queue/token reserves, unsafe timeouts, weak administrator/geo secrets, invalid backup encryption keys, and incomplete S3 credentials.
+
+## Placement controller
+
+`Rebalancing:ManualApproval` defaults to `true`: planning is read-only and a catalog leader starts no move until an administrator approves the returned plan. `MaximumConcurrentMoves` bounds simultaneous source/target pairs. With manual approval disabled, the hosted controller plans and advances moves every `ReconcileInterval`; setting `Enabled=false` disables background progression while keeping explicit administrator actions available.
 
 ## Rate and congestion policy
 

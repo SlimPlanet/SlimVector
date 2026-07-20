@@ -42,6 +42,12 @@ dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --prof
 dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Standard --baseline artifacts/benchmarks/<run>/benchmark-results.json
 # Large is intentionally for a dedicated machine.
 dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Large
+
+# Manual open-loop saturation sweep; latency starts at the intended dispatch time.
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Saturation --storage-mode durable
+
+# Short custom saturation probe.
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Saturation --saturation-warmup-seconds 2 --saturation-stage-seconds 10 --saturation-rates 100,200,400
 # Restrict a diagnostic run and override the statistical protocol when needed.
 dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --e2e --profile Smoke --indexes Flat-Float32,Hnsw --repetitions 3 --warmups 1 --operation-count 512
 # Compare buffered and durable HTTP persistence, or select only one mode.

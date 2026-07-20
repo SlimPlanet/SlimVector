@@ -45,6 +45,17 @@ public sealed class GeoReplicatingConsensusCoordinator : IConsensusCoordinator
 
     public string GetDataGroupId(Guid collectionId) => _local.GetDataGroupId(collectionId);
 
+    public CollectionPlacement CreateInitialPlacement(
+        Guid collectionId,
+        int virtualShardCount = CollectionPlacement.DefaultVirtualShardCount) =>
+        _local.CreateInitialPlacement(collectionId, virtualShardCount);
+
+    public ShardRoute GetShardRoute(CollectionDefinition collection, string documentId) =>
+        _local.GetShardRoute(collection, documentId);
+
+    public IReadOnlyList<ShardRoute> GetReadRoutes(CollectionDefinition collection) =>
+        _local.GetReadRoutes(collection);
+
     public async ValueTask UpsertCollectionAsync(
         CollectionDefinition collection,
         CancellationToken cancellationToken = default)
@@ -86,6 +97,12 @@ public sealed class GeoReplicatingConsensusCoordinator : IConsensusCoordinator
         ReadConsistency consistency,
         CancellationToken cancellationToken = default) =>
         _local.ApplyReadBarrierAsync(collectionId, consistency, cancellationToken);
+
+    public ValueTask ApplyReadBarriersAsync(
+        CollectionDefinition collection,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        _local.ApplyReadBarriersAsync(collection, consistency, cancellationToken);
 
     public ValueTask DisposeAsync() => _local.DisposeAsync();
 }

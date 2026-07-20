@@ -129,6 +129,77 @@ public sealed class AdaptiveWriteSchedulerTests
         Assert.Equal(1, scheduler.GetSnapshot().RejectedWrites);
     }
 
+    [Fact]
+    public async Task VirtualShardsPartitionNonAtomicWritesAndRejectCrossGroupAtomicity()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        RecordingConsensus consensus = new();
+        await using AdaptiveWriteScheduler scheduler = Scheduler(
+            consensus,
+            new AdaptiveBatchingOptions { Enabled = false, MaximumBatchBytes = 1024 * 1024 },
+            new BackpressureOptions());
+        await scheduler.StartAsync(cancellationToken);
+        CollectionDefinition collection = Collection("sharded");
+        collection = collection with
+        {
+            Placement = CollectionPlacement.Create(collection.Id, ["data-0", "data-1"], 32),
+        };
+        string firstId = Enumerable.Range(0, 1_000).Select(static index => $"doc-{index}")
+            .First(id => collection.Placement.Resolve(collection.Id, id).DataGroupId == "data-0");
+        string secondId = Enumerable.Range(0, 1_000).Select(static index => $"doc-{index}")
+            .First(id => collection.Placement.Resolve(collection.Id, id).DataGroupId == "data-1");
+        StorageOperation[] operations =
+        [
+            StorageOperation.Upsert(Document(firstId)),
+            StorageOperation.Upsert(Document(secondId)),
+        ];
+
+        await scheduler.EnqueueAsync(collection, operations, "client", atomic: false, cancellationToken);
+
+        Assert.Equal(
+            ["data-0", "data-1"],
+            consensus.Batches.SelectMany(static batch => batch)
+                .Select(static write => write.Route.DataGroupId)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal));
+        DomainException exception = await Assert.ThrowsAsync<DomainException>(() => scheduler
+            .EnqueueAsync(collection, operations, "client", atomic: true, cancellationToken).AsTask());
+        Assert.Equal(ErrorCodes.CrossShardAtomicUnsupported, exception.Code);
+    }
+
+    [Fact]
+    public async Task AtomicWritesAcrossVirtualShardsShareOnePhysicalGroupCommand()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        RecordingConsensus consensus = new();
+        await using AdaptiveWriteScheduler scheduler = Scheduler(
+            consensus,
+            new AdaptiveBatchingOptions { Enabled = false, MaximumBatchBytes = 1024 * 1024 },
+            new BackpressureOptions { GlobalQueueCapacity = 1 });
+        await scheduler.StartAsync(cancellationToken);
+        CollectionDefinition collection = Collection("same-group");
+        collection = collection with
+        {
+            Placement = CollectionPlacement.Create(collection.Id, ["data-0"], 32),
+        };
+        string firstId = "same-0";
+        int firstShard = collection.Placement.Resolve(collection.Id, firstId).ShardId;
+        string secondId = Enumerable.Range(1, 1_000).Select(static index => $"same-{index}")
+            .First(id => collection.Placement.Resolve(collection.Id, id).ShardId != firstShard);
+
+        await scheduler.EnqueueAsync(
+            collection,
+            [StorageOperation.Upsert(Document(firstId)), StorageOperation.Upsert(Document(secondId))],
+            "client",
+            atomic: true,
+            cancellationToken);
+
+        CollectionWrite write = Assert.Single(Assert.Single(consensus.Batches));
+        Assert.Equal(2, write.Operations.Count);
+        Assert.Equal("data-0", write.Route.DataGroupId);
+        Assert.Equal(-1, write.Route.ShardId);
+    }
+
     private static AdaptiveWriteScheduler Scheduler(
         IConsensusCoordinator consensus,
         AdaptiveBatchingOptions batching,

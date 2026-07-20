@@ -32,6 +32,7 @@ internal static partial class ReliableBenchmarkWorker
                 BenchmarkJobKind.ColdLoad => (RunColdLoad(job), null),
                 BenchmarkJobKind.ServerCrud => (await RunServerAsync(job, controlsOnly: false).ConfigureAwait(false), null),
                 BenchmarkJobKind.ServerControl => (await RunServerAsync(job, controlsOnly: true).ConfigureAwait(false), null),
+                BenchmarkJobKind.Saturation => (await RunServerAsync(job, controlsOnly: false, saturationOnly: true).ConfigureAwait(false), null),
                 BenchmarkJobKind.Migration => (RunMigration(job), null),
                 BenchmarkJobKind.Raft => (await RunRaftAsync(job).ConfigureAwait(false), null),
                 _ => throw new InvalidOperationException($"Unsupported benchmark worker kind '{job.Kind}'."),
@@ -414,7 +415,8 @@ internal static partial class ReliableBenchmarkWorker
 
     internal static CollectionDefinition Definition(ReliableBenchmarkProfile profile, ReliableIndexScenario scenario)
     {
-        int listCount = Math.Min(profile.IvfLists, profile.VectorCount);
+        int maximumTrainableCentroids = Math.Max(1, profile.VectorCount / IvfFlatIndex.MinimumTrainingPointsPerCentroid);
+        int listCount = Math.Min(profile.IvfLists, maximumTrainableCentroids);
         int tuning = scenario.SearchTuning ?? scenario.Kind switch
         {
             VectorIndexKind.Hnsw => 64,
@@ -440,7 +442,7 @@ internal static partial class ReliableBenchmarkWorker
                     : Math.Min(4, listCount),
                 IvfTrainingIterations = profile.TrainingIterations,
                 PqSubvectorCount = profile.PqSubvectors,
-                PqCentroidCount = Math.Min(256, profile.VectorCount),
+                PqCentroidCount = Math.Clamp(maximumTrainableCentroids, 2, 256),
                 PqTrainingIterations = profile.TrainingIterations,
                 DiskAnnMaxDegree = profile.DiskAnnDegree,
                 DiskAnnSearchListSize = scenario.Kind == VectorIndexKind.DiskAnn ? tuning : 64,

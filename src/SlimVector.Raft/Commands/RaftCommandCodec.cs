@@ -67,12 +67,13 @@ public static class RaftCommandCodec
         Guid commandId,
         string groupId,
         CollectionDefinition collection,
-        IReadOnlyList<StorageOperation> operations) => new()
+        IReadOnlyList<StorageOperation> operations,
+        ShardRoute route = default) => new()
         {
             CommandId = commandId,
             GroupId = groupId,
             Kind = RaftCommandKind.DataBatch,
-            DataBatch = FromWrite(new CollectionWrite(collection, operations)),
+            DataBatch = FromWrite(new CollectionWrite(collection, operations, route)),
         };
 
     public static RaftCommandEnvelope ShardBatch(
@@ -118,6 +119,7 @@ public static class RaftCommandCodec
                 DiskAnnRetainedGenerations = PositiveOrDefault(collection.DiskAnnRetainedGenerations, 2),
             },
             MetadataIndexed = collection.MetadataIndexed,
+            Placement = collection.Placement is null ? null : ToDomain(collection.Placement),
             CreatedAt = collection.CreatedAt,
             UpdatedAt = collection.UpdatedAt,
         };
@@ -171,7 +173,51 @@ public static class RaftCommandCodec
             DiskAnnPageSize = collection.VectorIndex.DiskAnnPageSize,
             DiskAnnCachePages = collection.VectorIndex.DiskAnnCachePages,
             DiskAnnRetainedGenerations = collection.VectorIndex.DiskAnnRetainedGenerations,
+            Placement = collection.Placement is null ? null : FromDomain(collection.Placement),
         };
+    }
+
+    private static RaftCollectionPlacement FromDomain(CollectionPlacement placement) => new()
+    {
+        Epoch = placement.Epoch,
+        VirtualShardCount = placement.VirtualShardCount,
+        ShardKey = placement.ShardKey,
+        Shards = placement.Shards.Select(static shard => new RaftShardPlacement
+        {
+            ShardId = shard.ShardId,
+            DataGroupId = shard.DataGroupId,
+            ReplicaSet = shard.ReplicaSet,
+            State = shard.State,
+            SourceDataGroupId = shard.SourceDataGroupId,
+            TargetDataGroupId = shard.TargetDataGroupId,
+            OperationId = shard.OperationId,
+            SnapshotVersion = shard.SnapshotVersion,
+            ReplayedThroughVersion = shard.ReplayedThroughVersion,
+        }).ToArray(),
+    };
+
+    private static CollectionPlacement ToDomain(RaftCollectionPlacement placement)
+    {
+        CollectionPlacement result = new()
+        {
+            Epoch = placement.Epoch,
+            VirtualShardCount = placement.VirtualShardCount,
+            ShardKey = placement.ShardKey,
+            Shards = placement.Shards.Select(static shard => new ShardPlacement
+            {
+                ShardId = shard.ShardId,
+                DataGroupId = shard.DataGroupId,
+                ReplicaSet = shard.ReplicaSet,
+                State = shard.State,
+                SourceDataGroupId = shard.SourceDataGroupId,
+                TargetDataGroupId = shard.TargetDataGroupId,
+                OperationId = shard.OperationId,
+                SnapshotVersion = shard.SnapshotVersion,
+                ReplayedThroughVersion = shard.ReplayedThroughVersion,
+            }).ToArray(),
+        };
+        result.Validate();
+        return result;
     }
 
     public static RaftStorageOperation FromStorage(StorageOperation operation)
@@ -292,6 +338,8 @@ public static class RaftCommandCodec
             CollectionId = write.Collection.Id,
             Collection = FromDomain(write.Collection),
             Operations = write.Operations.Select(FromStorage).ToArray(),
+            ShardId = write.Route.ShardId,
+            RoutingEpoch = write.Route.RoutingEpoch,
         };
     }
 }

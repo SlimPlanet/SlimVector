@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SlimVector.Domain;
+using SlimVector.Indexing;
 
 namespace SlimVector.Benchmarks;
 
@@ -33,6 +34,18 @@ internal static class ReliableBenchmarkRunner
             Repetitions = ParsePositiveInt(args, "--repetitions", profile.Repetitions),
             Warmups = ParseNonNegativeInt(args, "--warmups", profile.Warmups),
             OperationCount = ParsePositiveInt(args, "--operation-count", profile.OperationCount),
+            SaturationWarmupSeconds = ParseNonNegativeInt(
+                args,
+                "--saturation-warmup-seconds",
+                profile.SaturationWarmupSeconds),
+            SaturationStageSeconds = ParsePositiveInt(
+                args,
+                "--saturation-stage-seconds",
+                profile.SaturationStageSeconds),
+            SaturationRatesPerSecond = ParsePositiveIntList(
+                GetArgument(args, "--saturation-rates"),
+                profile.SaturationRatesPerSecond,
+                "--saturation-rates"),
         };
         string datasetKind = GetArgument(args, "--dataset") ?? "synthetic";
         BenchmarkDatasetSpecification dataset = ReliableBenchmarkDatasetFactory.Specification(
@@ -41,7 +54,13 @@ internal static class ReliableBenchmarkRunner
             GetArgument(args, "--queries-path"),
             GetArgument(args, "--truth-path"));
         double[] recallThresholds = ParseRecallThresholds(GetArgument(args, "--recall-thresholds") ?? "0.90,0.95,0.99");
-        ReliableIndexScenario[] scenarios = FilterScenarios(CreateScenarios(profile), GetArgument(args, "--indexes"));
+        string? requestedIndexes = GetArgument(args, "--indexes");
+        if (requestedIndexes is null && string.Equals(profile.Name, "Saturation", StringComparison.Ordinal))
+        {
+            requestedIndexes = "Flat-Float32";
+        }
+
+        ReliableIndexScenario[] scenarios = FilterScenarios(CreateScenarios(profile), requestedIndexes);
         BenchmarkStorageMode[] storageModes = ParseStorageModes(GetArgument(args, "--storage-mode") ??
             (profile.Name == "Large" ? "durable" : "both"));
         string outputRoot = Path.GetFullPath(GetArgument(args, "--output") ?? "artifacts/benchmarks");
@@ -55,14 +74,16 @@ internal static class ReliableBenchmarkRunner
         List<BenchmarkIterationResult> iterations = [];
         try
         {
-            List<BenchmarkJobTemplate> firstStage = scenarios.Select(scenario => new BenchmarkJobTemplate(BenchmarkJobKind.Index, scenario, null))
-                .ToList();
-            if (!HasFlag(args, "--skip-migration"))
+            bool saturationProfile = string.Equals(profile.Name, "Saturation", StringComparison.Ordinal);
+            List<BenchmarkJobTemplate> firstStage = saturationProfile
+                ? []
+                : scenarios.Select(scenario => new BenchmarkJobTemplate(BenchmarkJobKind.Index, scenario, null)).ToList();
+            if (!saturationProfile && !HasFlag(args, "--skip-migration"))
             {
                 firstStage.Add(new BenchmarkJobTemplate(BenchmarkJobKind.Migration, null, null));
             }
 
-            if (!HasFlag(args, "--skip-raft"))
+            if (!saturationProfile && !HasFlag(args, "--skip-raft"))
             {
                 firstStage.Add(new BenchmarkJobTemplate(BenchmarkJobKind.Raft, null, null));
             }
@@ -71,21 +92,26 @@ internal static class ReliableBenchmarkRunner
             BenchmarkScenarioAggregate[] localAggregates = Aggregate(iterations).ToArray();
             if (!HasFlag(args, "--skip-server"))
             {
-                ReliableIndexScenario[] serverScenarios = SelectServerScenarios(
-                    scenarios,
-                    localAggregates,
-                    recallThresholds[0],
-                    GetArgument(args, "--server-indexes"));
+                ReliableIndexScenario[] serverScenarios = saturationProfile
+                    ? FilterScenarios(scenarios, GetArgument(args, "--server-indexes"))
+                    : SelectServerScenarios(
+                        scenarios,
+                        localAggregates,
+                        recallThresholds[0],
+                        GetArgument(args, "--server-indexes"));
                 List<BenchmarkJobTemplate> serverStage = [];
                 foreach (ReliableIndexScenario scenario in serverScenarios)
                 {
                     foreach (BenchmarkStorageMode storageMode in storageModes)
                     {
-                        serverStage.Add(new BenchmarkJobTemplate(BenchmarkJobKind.ServerCrud, scenario, storageMode));
+                        serverStage.Add(new BenchmarkJobTemplate(
+                            saturationProfile ? BenchmarkJobKind.Saturation : BenchmarkJobKind.ServerCrud,
+                            scenario,
+                            storageMode));
                     }
                 }
 
-                foreach (BenchmarkStorageMode storageMode in storageModes)
+                foreach (BenchmarkStorageMode storageMode in saturationProfile ? [] : storageModes)
                 {
                     serverStage.Add(new BenchmarkJobTemplate(
                         BenchmarkJobKind.ServerControl,
@@ -168,6 +194,7 @@ internal static class ReliableBenchmarkRunner
                 QueueSaturationRejections = values.Sum(static result => result.QueueSaturationRejections),
                 CongestionRejections = values.Sum(static result => result.CongestionRejections),
                 ContractualRateLimitRejections = values.Sum(static result => result.ContractualRateLimitRejections),
+                MaxSustainableQps = values.Max(static result => result.MaxSustainableQps),
                 Operations = operations,
                 Iterations = values,
                 Failure = string.Join(" | ", values.Select(static result => result.Failure)
@@ -226,6 +253,17 @@ internal static class ReliableBenchmarkRunner
                 values.Select(static value => value.StorageDurableFlushes is long metric ? (double?)metric : null), seed + 12, "flushes"),
             ErrorCount = values.Sum(static value => value.ErrorCount),
             ExpectedRejectionCount = values.Sum(static value => value.ExpectedRejectionCount),
+            QueueSaturationRejections = values.Sum(static value => value.QueueSaturationRejections),
+            CongestionRejections = values.Sum(static value => value.CongestionRejections),
+            ContractualRateLimitRejections = values.Sum(static value => value.ContractualRateLimitRejections),
+            OfferedCountPerIteration = (int)Math.Round(values.Average(static value => value.OfferedCount)),
+            CompletedCountPerIteration = (int)Math.Round(values.Average(static value => value.CompletedCount)),
+            OfferedRatePerSecond = values.Select(static value => value.OfferedRatePerSecond)
+                .FirstOrDefault(static value => value.HasValue),
+            MeetsSaturationSlo = values.Any(static value => value.MeetsSaturationSlo.HasValue)
+                ? values.All(static value => value.MeetsSaturationSlo == true)
+                : null,
+            CoordinatedOmissionCorrected = values.Any(static value => value.CoordinatedOmissionCorrected),
             Iterations = values,
         };
     }
@@ -291,6 +329,7 @@ internal static class ReliableBenchmarkRunner
         {
             BenchmarkJobKind.ServerCrud => $"Server-{template.Scenario!.Name}-{template.StorageMode}",
             BenchmarkJobKind.ServerControl => $"Server-Control-{template.StorageMode}",
+            BenchmarkJobKind.Saturation => $"Server-Saturation-{template.Scenario!.Name}-{template.StorageMode}",
             BenchmarkJobKind.Migration => "AutoMigration-FlatToHnsw",
             BenchmarkJobKind.Raft => "Raft-Add-CatchUp",
             _ => template.Scenario?.Name ?? template.Kind.ToString(),
@@ -551,7 +590,10 @@ internal static class ReliableBenchmarkRunner
             Quantization = VectorQuantizationKind.Float32,
             SearchTuning = value,
         }));
-        int[] probes = IvfProbeValues.Where(value => value <= profile.IvfLists).ToArray();
+        int trainableLists = Math.Min(
+            profile.IvfLists,
+            Math.Max(1, profile.VectorCount / IvfFlatIndex.MinimumTrainingPointsPerCentroid));
+        int[] probes = IvfProbeValues.Where(value => value <= trainableLists).ToArray();
         scenarios.AddRange(probes.Select(value => new ReliableIndexScenario
         {
             Name = "IvfFlat-nprobe" + value.ToString(CultureInfo.InvariantCulture),
@@ -599,10 +641,11 @@ internal static class ReliableBenchmarkRunner
 
     internal static ReliableBenchmarkProfile ParseProfile(string value) => value.ToLowerInvariant() switch
     {
-        "smoke" => new ReliableBenchmarkProfile("Smoke", 1_000, 384, 100, 10, 32, 8, 12, 64, 8, 16, 320, 200, 5, 1),
+        "smoke" => new ReliableBenchmarkProfile("Smoke", 400, 384, 20, 10, 32, 8, 12, 64, 8, 16, 40, 100, 5, 1),
         "standard" => new ReliableBenchmarkProfile("Standard", 25_000, 768, 200, 10, 256, 8, 16, 128, 16, 32, 1_600, 2_000, 5, 1),
         "large" => new ReliableBenchmarkProfile("Large", 250_000, 1_536, 500, 10, 1_024, 16, 16, 200, 32, 48, 5_000, 10_000, 3, 1),
-        _ => throw new ArgumentException("Benchmark profile must be Smoke, Standard, or Large.", nameof(value)),
+        "saturation" => new ReliableBenchmarkProfile("Saturation", 10_000, 384, 100, 10, 64, 8, 12, 128, 16, 32, 1_000, 10_000, 1, 0),
+        _ => throw new ArgumentException("Benchmark profile must be Smoke, Standard, Large, or Saturation.", nameof(value)),
     };
 
     internal static BenchmarkStorageMode[] ParseStorageModes(string value) => value.ToLowerInvariant() switch
@@ -639,6 +682,23 @@ internal static class ReliableBenchmarkRunner
             : int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int value) && value >= 0
                 ? value
                 : throw new ArgumentException($"{name} must be a non-negative integer.", nameof(args));
+    }
+
+    internal static int[] ParsePositiveIntList(string? value, int[] fallback, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        int[] values = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => int.TryParse(item, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0
+                ? parsed
+                : throw new ArgumentException($"{name} must contain positive integers.", nameof(value)))
+            .Distinct()
+            .Order()
+            .ToArray();
+        return values.Length > 0 ? values : throw new ArgumentException($"{name} may not be empty.", nameof(value));
     }
 
     private static string? GetArgument(string[] args, string name)

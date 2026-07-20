@@ -6,6 +6,7 @@ using SlimVector.Api.Contracts;
 using SlimVector.Application;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Indexes;
+using SlimVector.Application.Placement;
 using SlimVector.Raft;
 
 namespace SlimVector.Api;
@@ -35,7 +36,109 @@ internal static class AdminEndpoints
         membership.MapPost("/demote", DemoteMemberAsync).Produces<AdminOperationResponse>();
         membership.MapPost("/remove", RemoveMemberAsync).Produces<AdminOperationResponse>();
         membership.MapPost("/transfer-leadership", TransferLeadershipAsync).Produces<AdminOperationResponse>();
+
+        RouteGroupBuilder rebalance = admin.MapGroup("/cluster/rebalance").WithTags("Cluster rebalancing");
+        rebalance.MapGet("/plan", PlanRebalanceAsync).Produces<RebalancePlanResponse>();
+        rebalance.MapPost("/approve", ApproveRebalanceAsync).Produces<PlacementControllerResponse>();
+        rebalance.MapGet("/status", GetRebalanceStatusAsync).Produces<PlacementControllerResponse>();
+        rebalance.MapPost("/advance", AdvanceRebalanceAsync).Produces<PlacementControllerResponse>();
+        rebalance.MapPost("/pause", PauseRebalance).Produces<AdminOperationResponse>();
+        rebalance.MapPost("/resume", ResumeRebalance).Produces<AdminOperationResponse>();
         return endpoints;
+    }
+
+    private static async Task<IResult> PlanRebalanceAsync(
+        string? drainDataGroupId,
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        RebalancePlan plan = await controller.PlanAsync(drainDataGroupId, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(plan));
+    }
+
+    private static async Task<IResult> ApproveRebalanceAsync(
+        RebalanceApprovalRequest request,
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        PlacementControllerStatus status = await controller.ApproveAsync(request.PlanId, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(status));
+    }
+
+    private static async Task<IResult> GetRebalanceStatusAsync(
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        return TypedResults.Ok(ToResponse(await controller.GetStatusAsync(cancellationToken).ConfigureAwait(false)));
+    }
+
+    private static async Task<IResult> AdvanceRebalanceAsync(
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        return TypedResults.Ok(ToResponse(await controller.AdvanceAsync(cancellationToken).ConfigureAwait(false)));
+    }
+
+    private static IResult PauseRebalance(
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        controller.Pause();
+        return TypedResults.Ok(new AdminOperationResponse { Status = "paused" });
+    }
+
+    private static IResult ResumeRebalance(
+        HttpContext context,
+        IPlacementController controller,
+        IOptions<ApiOptions> options)
+    {
+        IResult? unauthorized = Authorize(context, options.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        controller.ResumeProcessing();
+        return TypedResults.Ok(new AdminOperationResponse { Status = "resumed" });
     }
 
     private static async Task<IResult> GetIndexStatusAsync(
@@ -261,5 +364,40 @@ internal static class AdminEndpoints
         State = status.State,
         Reason = status.Reason,
         LastMigration = status.LastMigration,
+    };
+
+    private static RebalancePlanResponse ToResponse(RebalancePlan plan) => new()
+    {
+        PlanId = plan.PlanId,
+        CreatedAt = plan.CreatedAt,
+        DryRun = plan.DryRun,
+        Actions = plan.Actions.Select(static action => new RebalanceActionResponse
+        {
+            OperationId = action.OperationId,
+            CollectionId = action.CollectionId,
+            CollectionName = action.CollectionName,
+            ShardId = action.ShardId,
+            SourceDataGroupId = action.SourceDataGroupId,
+            TargetDataGroupId = action.TargetDataGroupId,
+            Reason = action.Reason,
+        }).ToArray(),
+    };
+
+    private static PlacementControllerResponse ToResponse(PlacementControllerStatus status) => new()
+    {
+        Paused = status.Paused,
+        Moves = status.Moves.Select(static move => new ShardMoveResponse
+        {
+            OperationId = move.OperationId,
+            CollectionId = move.CollectionId,
+            CollectionName = move.CollectionName,
+            ShardId = move.ShardId,
+            SourceDataGroupId = move.SourceDataGroupId,
+            TargetDataGroupId = move.TargetDataGroupId,
+            State = move.State,
+            RoutingEpoch = move.RoutingEpoch,
+            SnapshotVersion = move.SnapshotVersion,
+            ReplayedThroughVersion = move.ReplayedThroughVersion,
+        }).ToArray(),
     };
 }

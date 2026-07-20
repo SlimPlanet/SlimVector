@@ -5,7 +5,8 @@ using SlimVector.Storage;
 
 public sealed record CollectionWrite(
     CollectionDefinition Collection,
-    IReadOnlyList<StorageOperation> Operations);
+    IReadOnlyList<StorageOperation> Operations,
+    ShardRoute Route = default);
 
 public sealed record RaftGroupStatus
 {

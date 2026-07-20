@@ -7,6 +7,7 @@ using SlimVector.Application;
 using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
+using SlimVector.Application.Placement;
 using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
@@ -89,7 +90,7 @@ app.MapGet("/health/ready", static (IConsensusCoordinator consensus) => consensu
         new HealthResponse { Status = "not-ready" },
         ApiJsonContext.Default.HealthResponse,
         statusCode: StatusCodes.Status503ServiceUnavailable));
-app.MapGet("/metrics", static (
+app.MapGet("/metrics", static async (
     ISlimVectorDatabase database,
     OperationalMetrics operationalMetrics,
     IConsensusCoordinator consensus,
@@ -99,14 +100,19 @@ app.MapGet("/metrics", static (
     IGeoReplicationService geoReplication,
     IGeoReplicationReceiver geoReceiver,
     IAdmissionController admission,
+    IPlacementController placementController,
     StorageMetrics storageMetrics,
-    Microsoft.Extensions.Options.IOptions<ObservabilityOptions> observability) =>
+    Microsoft.Extensions.Options.IOptions<ObservabilityOptions> observability,
+    CancellationToken cancellationToken) =>
 {
     if (!observability.Value.MetricsEnabled)
     {
         return Results.NotFound();
     }
 
+    PlacementControllerStatus placementStatus = await placementController
+        .GetStatusAsync(cancellationToken)
+        .ConfigureAwait(false);
     long memory = GC.GetTotalMemory(forceFullCollection: false);
     GCMemoryInfo gcMemory = GC.GetGCMemoryInfo();
     ReadOnlySpan<GCGenerationInfo> generations = gcMemory.GenerationInfo;
@@ -141,6 +147,8 @@ app.MapGet("/metrics", static (
         $"slimvector_search_mode_requests_total{{mode=\"text\"}} {operations.TextSearches}\n" +
         $"slimvector_search_mode_requests_total{{mode=\"hybrid\"}} {operations.HybridSearches}\n" +
         $"slimvector_search_mode_requests_total{{mode=\"metadata\"}} {operations.MetadataSearches}\n" +
+        $"slimvector_search_fanout_requests_total {operations.FanOutSearches}\n" +
+        $"slimvector_search_fanout_partitions_total {operations.FanOutPartitions}\n" +
         $"slimvector_index_loads_total {operations.IndexLoads}\n" +
         $"slimvector_index_load_failures_total {operations.IndexLoadFailures}\n" +
         $"slimvector_index_load_duration_microseconds_total {operations.IndexLoadMicroseconds}\n" +
@@ -202,6 +210,16 @@ app.MapGet("/metrics", static (
                 body += $"slimvector_raft_member_replication_lag{{{memberLabels}}} {member.ReplicationLag.Value}\n";
             }
         }
+    }
+
+    body += $"slimvector_rebalance_paused {(placementStatus.Paused ? 1 : 0)}\n" +
+        $"slimvector_rebalance_moves {placementStatus.Moves.Count}\n";
+    foreach (ShardMoveStatus move in placementStatus.Moves)
+    {
+        string labels = $"collection=\"{EscapePrometheusLabel(move.CollectionName)}\",shard=\"{move.ShardId}\",source=\"{EscapePrometheusLabel(move.SourceDataGroupId)}\",target=\"{EscapePrometheusLabel(move.TargetDataGroupId)}\",state=\"{move.State.ToString().ToLowerInvariant()}\"";
+        body += $"slimvector_rebalance_move_info{{{labels}}} 1\n" +
+            $"slimvector_rebalance_snapshot_version{{{labels}}} {move.SnapshotVersion}\n" +
+            $"slimvector_rebalance_replayed_through_version{{{labels}}} {move.ReplayedThroughVersion}\n";
     }
 
     WriteSchedulerSnapshot writes = writeScheduler.GetSnapshot();

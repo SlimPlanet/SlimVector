@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
+using SlimVector.Application.Placement;
 using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
@@ -45,6 +46,8 @@ public static class ServiceCollectionExtensions
         services.AddOptions<RaftOptions>().Bind(configuration.GetSection(RaftOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<ClusterMembershipOptions>, ClusterMembershipOptionsValidator>();
         services.AddOptions<ClusterMembershipOptions>().Bind(configuration.GetSection(ClusterMembershipOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<RebalancingOptions>, RebalancingOptionsValidator>();
+        services.AddOptions<RebalancingOptions>().Bind(configuration.GetSection(RebalancingOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<GeoReplicationOptions>, GeoReplicationOptionsValidator>();
         services.AddOptions<GeoReplicationOptions>().Bind(configuration.GetSection(GeoReplicationOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<AdaptiveBatchingOptions>, AdaptiveBatchingOptionsValidator>();
@@ -104,12 +107,14 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<ConsensusCoordinatorHolder>().Local,
             provider.GetRequiredService<IGeoReplicationService>()));
         services.AddSingleton<IWriteScheduler, AdaptiveWriteScheduler>();
+        services.AddSingleton<IPlacementController, PlacementController>();
         services.AddSingleton<IAdmissionController, AdaptiveAdmissionController>();
         services.AddHttpClient("SlimVector.Backup.S3");
         services.AddSingleton<IBackupService, BackupService>();
         services.AddSingleton<ISlimVectorDatabase, SlimVectorDatabase>();
         services.AddHostedService<SlimVectorHostedService>();
         services.AddHostedService<BackupHostedService>();
+        services.AddHostedService<PlacementControllerHostedService>();
         return services;
     }
 

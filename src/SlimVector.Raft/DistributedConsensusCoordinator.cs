@@ -164,6 +164,18 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
 
     public string GetDataGroupId(Guid collectionId) => _node.GetDataGroupId(collectionId);
 
+    public CollectionPlacement CreateInitialPlacement(
+        Guid collectionId,
+        int virtualShardCount = CollectionPlacement.DefaultVirtualShardCount) =>
+        CollectionPlacement.Create(collectionId, _node.DataGroupIds, virtualShardCount);
+
+    public ShardRoute GetShardRoute(CollectionDefinition collection, string documentId) =>
+        collection.Placement?.Resolve(collection.Id, documentId) ??
+        new ShardRoute(0, GetDataGroupId(collection.Id), 0);
+
+    public IReadOnlyList<ShardRoute> GetReadRoutes(CollectionDefinition collection) =>
+        collection.Placement?.ReadRoutes() ?? [new ShardRoute(0, GetDataGroupId(collection.Id), 0)];
+
     public ValueTask UpsertCollectionAsync(CollectionDefinition collection, CancellationToken cancellationToken = default) =>
         _node.ReplicateCatalogAsync(
             RaftCommandCodec.CatalogUpsert(
@@ -187,10 +199,28 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
         IReadOnlyList<StorageOperation> operations,
         CancellationToken cancellationToken = default)
     {
-        string groupId = GetDataGroupId(collection.Id);
-        return _node.ReplicateDataAsync(
-            collection.Id,
-            RaftCommandCodec.DataBatch(Guid.NewGuid(), groupId, collection, operations),
+        if (operations.Count == 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        ShardRoute[] routes = operations.Select(operation => GetShardRoute(collection, operation.Id)).ToArray();
+        ShardRoute route = routes[0];
+        if (routes.Any(candidate => !string.Equals(candidate.DataGroupId, route.DataGroupId, StringComparison.Ordinal)))
+        {
+            throw new DomainException(
+                ErrorCodes.CrossShardAtomicUnsupported,
+                "A replicated data batch may target only one physical data group.");
+        }
+
+        if (routes.Any(candidate => candidate.ShardId != route.ShardId))
+        {
+            route = route with { ShardId = -1 };
+        }
+
+        return _node.ReplicateDataGroupAsync(
+            route.DataGroupId,
+            RaftCommandCodec.DataBatch(Guid.NewGuid(), route.DataGroupId, collection, operations, route),
             cancellationToken);
     }
 
@@ -204,16 +234,17 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
             return ValueTask.CompletedTask;
         }
 
-        string groupId = GetDataGroupId(writes[0].Collection.Id);
-        if (writes.Any(write => !string.Equals(GetDataGroupId(write.Collection.Id), groupId, StringComparison.Ordinal)))
+        ShardRoute firstRoute = NormalizeRoute(writes[0]);
+        string groupId = firstRoute.DataGroupId;
+        if (writes.Any(write => !string.Equals(NormalizeRoute(write).DataGroupId, groupId, StringComparison.Ordinal)))
         {
             throw new ArgumentException("A replicated shard batch may target only one data group.", nameof(writes));
         }
 
-        Guid routingCollectionId = writes[0].Collection.Id;
-        return _node.ReplicateDataAsync(
-            routingCollectionId,
-            RaftCommandCodec.ShardBatch(Guid.NewGuid(), groupId, writes),
+        CollectionWrite[] routedWrites = writes.Select(write => write with { Route = NormalizeRoute(write) }).ToArray();
+        return _node.ReplicateDataGroupAsync(
+            groupId,
+            RaftCommandCodec.ShardBatch(Guid.NewGuid(), groupId, routedWrites),
             cancellationToken);
     }
 
@@ -223,6 +254,15 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
         CancellationToken cancellationToken = default) =>
         _node.ApplyReadBarrierAsync(collectionId, consistency, cancellationToken);
 
+    public ValueTask ApplyReadBarriersAsync(
+        CollectionDefinition collection,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        _node.ApplyReadBarriersAsync(
+            GetReadRoutes(collection).Select(static route => route.DataGroupId),
+            consistency,
+            cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         _applier.StateChanged -= OnStateChanged;
@@ -230,6 +270,10 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
     }
 
     private void OnStateChanged(Guid? collectionId) => StateChanged?.Invoke(collectionId);
+
+    private ShardRoute NormalizeRoute(CollectionWrite write) => write.Route.RoutingEpoch > 0
+        ? write.Route
+        : GetShardRoute(write.Collection, write.Operations[0].Id);
 
     private static void ValidateSafeRemoval(
         RaftGroupNode group,

@@ -142,6 +142,12 @@ public sealed class CollectionSearchIndex : IDisposable
 
     public byte[] Serialize(IEnumerable<DocumentRecord> documents)
     {
+        _ = _vector switch
+        {
+            IvfFlatIndex ivfFlat => ivfFlat.RebuildIfNeeded(),
+            IvfPqIndex ivfPq => ivfPq.RebuildIfNeeded(),
+            _ => false,
+        };
         string signature = HnswIndex.ComputeDocumentSignature(documents);
         byte[] vector = _vector switch
         {
@@ -165,10 +171,15 @@ public sealed class CollectionSearchIndex : IDisposable
         return MemoryPackSerializer.Serialize(snapshot);
     }
 
-    public IReadOnlyList<HybridRankedResult> Search(SearchRequest request, int candidateMultiplier)
+    public IReadOnlyList<HybridRankedResult> Search(
+        SearchRequest request,
+        int candidateMultiplier,
+        IReadOnlySet<string>? routingCandidates = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        IReadOnlySet<string>? candidates = request.Filter is null ? null : EvaluateMetadata(request.Filter);
+        IReadOnlySet<string>? candidates = IntersectCandidates(
+            request.Filter is null ? null : EvaluateMetadata(request.Filter),
+            routingCandidates);
         int candidateLimit = Math.Max(request.Limit, checked(request.Limit * candidateMultiplier));
 
         return request.Mode switch
@@ -191,6 +202,29 @@ public sealed class CollectionSearchIndex : IDisposable
                 .ToArray(),
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Mode, "Unknown search mode."),
         };
+    }
+
+    private static IReadOnlySet<string>? IntersectCandidates(
+        IReadOnlySet<string>? metadataCandidates,
+        IReadOnlySet<string>? routingCandidates)
+    {
+        if (metadataCandidates is null)
+        {
+            return routingCandidates;
+        }
+
+        if (routingCandidates is null)
+        {
+            return metadataCandidates;
+        }
+
+        IReadOnlySet<string> smaller = metadataCandidates.Count <= routingCandidates.Count
+            ? metadataCandidates
+            : routingCandidates;
+        IReadOnlySet<string> larger = ReferenceEquals(smaller, metadataCandidates)
+            ? routingCandidates
+            : metadataCandidates;
+        return smaller.Where(larger.Contains).ToHashSet(StringComparer.Ordinal);
     }
 
     public void Dispose()

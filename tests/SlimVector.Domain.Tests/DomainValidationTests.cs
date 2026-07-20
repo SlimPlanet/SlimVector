@@ -46,4 +46,20 @@ public sealed class DomainValidationTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => MetadataValue.From(double.PositiveInfinity));
     }
+
+    [Fact]
+    public void VirtualShardRoutingIsStableAndUsesPersistedPlacement()
+    {
+        Guid collectionId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        CollectionPlacement placement = CollectionPlacement.Create(collectionId, ["data-0", "data-1"], 64);
+
+        ShardRoute first = placement.Resolve(collectionId, "document-42");
+        ShardRoute second = placement.Resolve(collectionId, "document-42");
+
+        Assert.Equal(first, second);
+        Assert.InRange(first.ShardId, 0, 63);
+        Assert.Equal(1, first.RoutingEpoch);
+        Assert.True(first.DataGroupId is "data-0" or "data-1");
+        Assert.Equal(64, placement.ReadRoutes().Count);
+    }
 }

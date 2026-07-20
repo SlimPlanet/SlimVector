@@ -76,6 +76,33 @@ public sealed class RaftCommandCodecTests
         Assert.Throws<InvalidDataException>(() => RaftCommandCodec.Serialize(mismatched));
     }
 
+    [Fact]
+    public void PlacementAndRoutingEpochRoundTripInDataCommand()
+    {
+        Guid collectionId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        CollectionDefinition collection = CollectionDefinition.Create("sharded", 2, DistanceMetric.Cosine) with
+        {
+            Id = collectionId,
+            Placement = CollectionPlacement.Create(collectionId, ["data-0", "data-1"], 16),
+        };
+        DocumentRecord document = Document([], DateTimeOffset.UtcNow) with { Id = "routed-document" };
+        ShardRoute route = collection.Placement.Resolve(collection.Id, document.Id);
+        RaftCommandEnvelope command = RaftCommandCodec.DataBatch(
+            Guid.NewGuid(),
+            route.DataGroupId,
+            collection,
+            [StorageOperation.Upsert(document)],
+            route);
+
+        RaftCommandEnvelope decoded = RaftCommandCodec.Deserialize(RaftCommandCodec.Serialize(command));
+        CollectionDefinition restored = RaftCommandCodec.ToDomain(decoded.DataBatch!.Collection);
+
+        Assert.Equal(route.ShardId, decoded.DataBatch.ShardId);
+        Assert.Equal(route.RoutingEpoch, decoded.DataBatch.RoutingEpoch);
+        Assert.Equal(route, restored.Placement!.Resolve(restored.Id, document.Id));
+        Assert.Equal(16, restored.Placement.Shards.Length);
+    }
+
     private static DocumentRecord Document(Dictionary<string, MetadataValue> metadata, DateTimeOffset timestamp) => new()
     {
         Id = "document-1",

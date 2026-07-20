@@ -1,6 +1,6 @@
 # Evolving Raft cluster
 
-Cluster mode runs one catalog group and `Raft:DataGroupCount` independent data groups. A collection remains whole and maps deterministically to one data group. All groups use the catalog base port plus the group offset; with base port 3262 and two data groups, a node listens on 3262–3264.
+Cluster mode runs one catalog group and `Raft:DataGroupCount` independent physical data groups. A collection has 256 stable virtual shards by default, with an epoch-versioned mapping persisted by the catalog. All groups use the catalog base port plus the group offset; with base port 3262 and two data groups, a node listens on 3262–3264.
 
 ## Bootstrap three voters
 
@@ -70,4 +70,18 @@ Repeat for each data group. DotNext 6.x has no persistent learner role after a v
 
 A majority is required for writes and linearizable barriers. No quorum yields controlled 503 responses and adaptive admission pressure; requests are not acknowledged locally. `leader`, `linearizable`, and `stale` reads respectively use leader state, a strong quorum barrier, or local applied state. Stop/upgrade one voter at a time and wait for lag to reach zero. Never copy or share a live node volume.
 
-Keep `DataGroupCount` stable after data exists: changing it alters placement and is not online collection sharding.
+Keep `DataGroupCount` stable while changing topology. Virtual shards can move online between existing groups without changing their hash identity. Use the authenticated rebalancer API for a dry-run and approval:
+
+```bash
+curl -H "X-SlimVector-Admin-Key: $SLIMVECTOR_ADMIN_KEY" \
+  "http://localhost:8081/api/v1/admin/cluster/rebalance/plan?drainDataGroupId=data-0"
+
+curl -X POST -H "X-SlimVector-Admin-Key: $SLIMVECTOR_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"planId":"<plan-id>"}' \
+  http://localhost:8081/api/v1/admin/cluster/rebalance/approve
+```
+
+Approved moves persist in the collection placement and resume after controller or catalog-leader restart. Copying writes a checksummed snapshot checkpoint for exactly one virtual shard; catch-up records an ordered upsert/delete delta and verifies that replay reconstructs the live source checksum before cutover. A final checksum barrier sends a changed source back through catch-up instead of switching stale data. `Rebalancing:ManualApproval` defaults to `true`; pause, resume, status and explicit advance endpoints are available under `/admin/cluster/rebalance`.
+
+Vector queries fan out once per represented physical data group. Each local search is constrained to the IDs routed to that group, and the coordinator performs a deterministic global top-K merge after all requested consistency barriers complete.

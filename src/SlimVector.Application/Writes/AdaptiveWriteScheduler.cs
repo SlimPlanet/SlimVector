@@ -85,10 +85,18 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
         _shutdown.Cancel();
     }
 
+    public ValueTask EnqueueAsync(
+        CollectionDefinition collection,
+        IReadOnlyList<StorageOperation> operations,
+        string? clientId,
+        CancellationToken cancellationToken = default) =>
+        EnqueueAsync(collection, operations, clientId, atomic: true, cancellationToken);
+
     public async ValueTask EnqueueAsync(
         CollectionDefinition collection,
         IReadOnlyList<StorageOperation> operations,
         string? clientId,
+        bool atomic,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(collection);
@@ -98,6 +106,44 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
             return;
         }
 
+        ShardPartition[] partitions = operations
+            .Select(operation => (Operation: operation, Route: _consensus.GetShardRoute(collection, operation.Id)))
+            .GroupBy(static item => (item.Route.DataGroupId, item.Route.RoutingEpoch))
+            .Select(group =>
+            {
+                (StorageOperation Operation, ShardRoute Route)[] items = group.ToArray();
+                int[] shardIds = items.Select(static item => item.Route.ShardId).Distinct().Take(2).ToArray();
+                ShardRoute route = new(
+                    shardIds.Length == 1 ? shardIds[0] : -1,
+                    group.Key.DataGroupId,
+                    group.Key.RoutingEpoch);
+                return new ShardPartition(route, items.Select(static item => item.Operation).ToArray());
+            })
+            .ToArray();
+        if (atomic && partitions.Select(static partition => partition.Route.DataGroupId)
+                .Distinct(StringComparer.Ordinal).Skip(1).Any())
+        {
+            Interlocked.Increment(ref _rejectedWrites);
+            throw new DomainException(
+                ErrorCodes.CrossShardAtomicUnsupported,
+                "Atomic writes may not span multiple physical data groups.");
+        }
+
+        await Task.WhenAll(partitions.Select(partition => EnqueuePartitionAsync(
+            collection,
+            partition.Operations,
+            partition.Route,
+            clientId,
+            cancellationToken).AsTask())).ConfigureAwait(false);
+    }
+
+    private async ValueTask EnqueuePartitionAsync(
+        CollectionDefinition collection,
+        IReadOnlyList<StorageOperation> operations,
+        ShardRoute route,
+        string? clientId,
+        CancellationToken cancellationToken)
+    {
         EnsureRunning();
         long estimatedBytes = EstimateBytes(collection, operations);
         if (estimatedBytes > _batching.MaximumBatchBytes)
@@ -109,7 +155,7 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
         }
 
         string effectiveClientId = string.IsNullOrWhiteSpace(clientId) ? AnonymousClientId : clientId;
-        string groupId = _consensus.GetDataGroupId(collection.Id);
+        string groupId = route.DataGroupId;
         bool globalReserved = await _globalSlots
             .WaitAsync(_backpressure.EnqueueTimeout, cancellationToken)
             .ConfigureAwait(false);
@@ -143,7 +189,7 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
                 Reject($"The write queue for shard '{groupId}' is saturated.");
             }
 
-            PendingWrite pending = new(collection, operations, effectiveClientId, estimatedBytes);
+            PendingWrite pending = new(collection, operations, route, effectiveClientId, estimatedBytes);
             if (!shard.Channel.Writer.TryWrite(pending))
             {
                 throw new InvalidOperationException("The write scheduler is stopping.");
@@ -312,7 +358,7 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
         try
         {
             CollectionWrite[] writes = batch
-                .Select(static pending => new CollectionWrite(pending.Collection, pending.Operations))
+                .Select(static pending => new CollectionWrite(pending.Collection, pending.Operations, pending.Route))
                 .ToArray();
             await _consensus.AppendBatchAsync(writes, _shutdown.Token).ConfigureAwait(false);
         }
@@ -584,6 +630,7 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
     private sealed class PendingWrite(
         CollectionDefinition collection,
         IReadOnlyList<StorageOperation> operations,
+        ShardRoute route,
         string clientId,
         long estimatedBytes)
     {
@@ -591,10 +638,14 @@ public sealed class AdaptiveWriteScheduler : IWriteScheduler
 
         public IReadOnlyList<StorageOperation> Operations { get; } = operations;
 
+        public ShardRoute Route { get; } = route;
+
         public string ClientId { get; } = clientId;
 
         public long EstimatedBytes { get; } = estimatedBytes;
 
         public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
+    private sealed record ShardPartition(ShardRoute Route, IReadOnlyList<StorageOperation> Operations);
 }

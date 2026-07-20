@@ -25,6 +25,9 @@ public static class ErrorCodes
     public const string InvalidIndexConfiguration = "invalid_index_configuration";
     public const string InvalidLimit = "invalid_limit";
     public const string InvalidMetadata = "invalid_metadata";
+    public const string InvalidPlacement = "invalid_placement";
+    public const string RoutingEpochMismatch = "routing_epoch_mismatch";
+    public const string CrossShardAtomicUnsupported = "cross_shard_atomic_unsupported";
     public const string MembershipConflict = "membership_conflict";
     public const string MembershipMemberNotFound = "membership_member_not_found";
     public const string InvalidVector = "invalid_vector";

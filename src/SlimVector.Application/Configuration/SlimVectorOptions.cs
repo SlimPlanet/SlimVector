@@ -22,6 +22,8 @@ public sealed class SlimVectorOptions
 
     public ClusterMembershipOptions ClusterMembership { get; set; } = new();
 
+    public RebalancingOptions Rebalancing { get; set; } = new();
+
     public AdaptiveBatchingOptions AdaptiveBatching { get; set; } = new();
 
     public RateLimitOptions RateLimit { get; set; } = new();
@@ -222,6 +224,23 @@ public sealed class ClusterMembershipOptions
     public TimeSpan OperationTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
     public bool AutoPromote { get; set; }
+}
+
+public sealed class RebalancingOptions
+{
+    public const string SectionName = "Rebalancing";
+
+    public bool Enabled { get; set; } = true;
+
+    public bool ManualApproval { get; set; } = true;
+
+    public int MaximumConcurrentMoves { get; set; } = 1;
+
+    public TimeSpan ReconcileInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    public TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(5);
+
+    public double MinimumImprovementRatio { get; set; } = 0.10;
 }
 
 public sealed class GeoReplicationOptions

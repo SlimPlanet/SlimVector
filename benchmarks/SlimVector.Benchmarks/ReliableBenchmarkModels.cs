@@ -8,6 +8,7 @@ internal enum BenchmarkJobKind
     Index,
     ServerCrud,
     ServerControl,
+    Saturation,
     Migration,
     Raft,
     ColdLoad,
@@ -34,7 +35,18 @@ internal sealed record ReliableBenchmarkProfile(
     int OperationCount,
     int ServerDocumentCount,
     int Repetitions,
-    int Warmups);
+    int Warmups)
+{
+    public int SaturationWarmupSeconds { get; init; } = 10;
+
+    public int SaturationStageSeconds { get; init; } = 30;
+
+    public int[] SaturationRatesPerSecond { get; init; } = [50, 100, 200, 400, 800, 1_600];
+
+    public double SaturationMaximumP99Milliseconds { get; init; } = 100;
+
+    public double SaturationMaximumRejectionRatio { get; init; } = 0.01;
+}
 
 internal sealed record ReliableIndexScenario
 {
@@ -122,9 +134,21 @@ internal sealed record BenchmarkIterationResult
 
     public int ContractualRateLimitRejections { get; init; }
 
+    public int OfferedCount { get; init; }
+
+    public int CompletedCount { get; init; }
+
+    public double? OfferedRatePerSecond { get; init; }
+
+    public bool? MeetsSaturationSlo { get; init; }
+
+    public bool CoordinatedOmissionCorrected { get; init; }
+
     public IReadOnlyList<OperationIterationResult> Operations { get; init; } = [];
 
     public string? Failure { get; init; }
+
+    public double? MaxSustainableQps { get; init; }
 }
 
 internal sealed record OperationIterationResult
@@ -202,6 +226,22 @@ internal sealed record OperationIterationResult
     public int ErrorCount { get; init; }
 
     public int ExpectedRejectionCount { get; init; }
+
+    public int QueueSaturationRejections { get; init; }
+
+    public int CongestionRejections { get; init; }
+
+    public int ContractualRateLimitRejections { get; init; }
+
+    public int OfferedCount { get; init; }
+
+    public int CompletedCount { get; init; }
+
+    public double? OfferedRatePerSecond { get; init; }
+
+    public bool? MeetsSaturationSlo { get; init; }
+
+    public bool CoordinatedOmissionCorrected { get; init; }
 
     public IReadOnlyList<double> LatencySamplesMilliseconds { get; init; } = [];
 
@@ -294,6 +334,22 @@ internal sealed record OperationAggregate
 
     public int ExpectedRejectionCount { get; init; }
 
+    public int QueueSaturationRejections { get; init; }
+
+    public int CongestionRejections { get; init; }
+
+    public int ContractualRateLimitRejections { get; init; }
+
+    public int OfferedCountPerIteration { get; init; }
+
+    public int CompletedCountPerIteration { get; init; }
+
+    public double? OfferedRatePerSecond { get; init; }
+
+    public bool? MeetsSaturationSlo { get; init; }
+
+    public bool CoordinatedOmissionCorrected { get; init; }
+
     public IReadOnlyList<OperationIterationResult> Iterations { get; init; } = [];
 }
 
@@ -322,6 +378,8 @@ internal sealed record BenchmarkScenarioAggregate
     public int CongestionRejections { get; init; }
 
     public int ContractualRateLimitRejections { get; init; }
+
+    public double? MaxSustainableQps { get; init; }
 
     public IReadOnlyList<OperationAggregate> Operations { get; init; } = [];
 

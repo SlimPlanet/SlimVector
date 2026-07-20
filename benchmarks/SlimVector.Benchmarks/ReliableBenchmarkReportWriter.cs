@@ -46,8 +46,8 @@ internal static class ReliableBenchmarkReportWriter
             .Append(run.HasSignificantRegression ? "yes" : "no").Append("**. Runtime: ")
             .Append(TimeSpan.FromSeconds(run.DurationSeconds).ToString("c", CultureInfo.InvariantCulture)).AppendLine(".").AppendLine();
         builder.AppendLine("## Scenario comparison").AppendLine();
-        builder.AppendLine("| Scenario | Index | Tuning | Storage | Recall median | Select p95 ms | Throughput median | Errors | Expected rejections |");
-        builder.AppendLine("|---|---|---:|---|---:|---:|---:|---:|---:|");
+        builder.AppendLine("| Scenario | Index | Tuning | Storage | Recall median | Select p95 ms | Throughput median | Sustainable QPS | Errors | Expected rejections |");
+        builder.AppendLine("|---|---|---:|---|---:|---:|---:|---:|---:|---:|");
         foreach (BenchmarkScenarioAggregate scenario in run.Results)
         {
             OperationAggregate? select = SelectOperation(scenario);
@@ -55,7 +55,8 @@ internal static class ReliableBenchmarkReportWriter
                 .Append(scenario.SearchTuning?.ToString(CultureInfo.InvariantCulture) ?? "n/a").Append(" | ")
                 .Append(scenario.StorageMode?.ToString() ?? "n/a").Append(" | ").Append(Format(scenario.RecallAtK.Median))
                 .Append(" | ").Append(Format(select?.P95Milliseconds)).Append(" | ")
-                .Append(Format(select?.ThroughputPerSecond.Median)).Append(" | ").Append(scenario.ErrorCount)
+                .Append(Format(select?.ThroughputPerSecond.Median)).Append(" | ")
+                .Append(Format(scenario.MaxSustainableQps)).Append(" | ").Append(scenario.ErrorCount)
                 .Append(" | ").Append(scenario.ExpectedRejectionCount).AppendLine(" |");
         }
 
@@ -130,7 +131,7 @@ internal static class ReliableBenchmarkReportWriter
 
     private static string ScenarioCsv(BenchmarkRunV5 run)
     {
-        StringBuilder builder = new("scenario,indexKind,quantization,searchTuning,storageMode,iterations,recallMedian,selectP95Ms,selectThroughputMedian,successCount,errorCount,expectedRejectionCount,queueRejections,congestionRejections,rateLimitRejections,failure\n");
+        StringBuilder builder = new("scenario,indexKind,quantization,searchTuning,storageMode,iterations,recallMedian,selectP95Ms,selectThroughputMedian,maxSustainableQps,successCount,errorCount,expectedRejectionCount,queueRejections,congestionRejections,rateLimitRejections,failure\n");
         foreach (BenchmarkScenarioAggregate scenario in run.Results)
         {
             OperationAggregate? select = SelectOperation(scenario);
@@ -138,7 +139,8 @@ internal static class ReliableBenchmarkReportWriter
                 .Append(Csv(scenario.Quantization)).Append(',').Append(scenario.SearchTuning?.ToString(CultureInfo.InvariantCulture))
                 .Append(',').Append(scenario.StorageMode).Append(',').Append(scenario.Iterations.Count).Append(',')
                 .Append(Raw(scenario.RecallAtK.Median)).Append(',').Append(Raw(select?.P95Milliseconds)).Append(',')
-                .Append(Raw(select?.ThroughputPerSecond.Median)).Append(',').Append(scenario.SuccessCount).Append(',')
+                .Append(Raw(select?.ThroughputPerSecond.Median)).Append(',').Append(Raw(scenario.MaxSustainableQps)).Append(',')
+                .Append(scenario.SuccessCount).Append(',')
                 .Append(scenario.ErrorCount).Append(',').Append(scenario.ExpectedRejectionCount).Append(',')
                 .Append(scenario.QueueSaturationRejections).Append(',').Append(scenario.CongestionRejections).Append(',')
                 .Append(scenario.ContractualRateLimitRejections).Append(',').Append(Csv(scenario.Failure ?? string.Empty)).AppendLine();
@@ -149,7 +151,7 @@ internal static class ReliableBenchmarkReportWriter
 
     private static string OperationCsv(BenchmarkRunV5 run)
     {
-        StringBuilder builder = new("scenario,operation,latencyUnit,batchSize,iterationCount,itemCountPerIteration,latencySampleCount,wallMedianMs,wallCiLowMs,wallCiHighMs,throughputMedian,p50Ms,p95Ms,p99Ms,cpuSecondsMedian,cpuCoreEquivalentMedian,normalizedCpuMedian,peakWorkingSetMedian,managedDeltaMedian,allocatedMedian,gcPauseMedianMs,artifactSizeDeltaMedian,storageReadMedian,storageWrittenMedian,durableFlushesMedian,errorCount,expectedRejectionCount\n");
+        StringBuilder builder = new("scenario,operation,latencyUnit,batchSize,iterationCount,itemCountPerIteration,latencySampleCount,wallMedianMs,wallCiLowMs,wallCiHighMs,throughputMedian,p50Ms,p95Ms,p99Ms,cpuSecondsMedian,cpuCoreEquivalentMedian,normalizedCpuMedian,peakWorkingSetMedian,managedDeltaMedian,allocatedMedian,gcPauseMedianMs,artifactSizeDeltaMedian,storageReadMedian,storageWrittenMedian,durableFlushesMedian,errorCount,expectedRejectionCount,queueRejections,congestionRejections,rateLimitRejections,offeredCount,completedCount,offeredRatePerSecond,meetsSaturationSlo,coordinatedOmissionCorrected\n");
         foreach (BenchmarkScenarioAggregate scenario in run.Results)
         {
             foreach (OperationAggregate operation in scenario.Operations)
@@ -168,7 +170,12 @@ internal static class ReliableBenchmarkReportWriter
                     .Append(Raw(operation.GcPauseMilliseconds?.Median)).Append(',').Append(Raw(operation.ArtifactSizeDeltaBytes.Median)).Append(',')
                     .Append(Raw(operation.StorageReadBytes?.Median)).Append(',').Append(Raw(operation.StorageWrittenBytes?.Median)).Append(',')
                     .Append(Raw(operation.StorageDurableFlushes?.Median)).Append(',').Append(operation.ErrorCount).Append(',')
-                    .Append(operation.ExpectedRejectionCount).AppendLine();
+                    .Append(operation.ExpectedRejectionCount).Append(',').Append(operation.QueueSaturationRejections).Append(',')
+                    .Append(operation.CongestionRejections).Append(',').Append(operation.ContractualRateLimitRejections).Append(',')
+                    .Append(operation.OfferedCountPerIteration).Append(',')
+                    .Append(operation.CompletedCountPerIteration).Append(',').Append(Raw(operation.OfferedRatePerSecond)).Append(',')
+                    .Append(operation.MeetsSaturationSlo?.ToString() ?? string.Empty).Append(',')
+                    .Append(operation.CoordinatedOmissionCorrected).AppendLine();
             }
         }
 
@@ -220,7 +227,10 @@ internal static class ReliableBenchmarkReportWriter
                     .Append("</td><td>").Append(Format(operation.P95Milliseconds)).Append("</td><td>")
                     .Append(Format(operation.ThroughputPerSecond.Median)).Append("</td><td>")
                     .Append(FormatMib(operation.PeakWorkingSetBytes?.Median)).Append("</td><td class=\"bad\">")
-                    .Append(operation.ErrorCount).Append("</td><td class=\"good\">").Append(operation.ExpectedRejectionCount)
+                    .Append(operation.ErrorCount).Append("</td><td class=\"good\" title=\"queue: ")
+                    .Append(operation.QueueSaturationRejections).Append(", congestion: ")
+                    .Append(operation.CongestionRejections).Append(", contractual: ")
+                    .Append(operation.ContractualRateLimitRejections).Append("\">").Append(operation.ExpectedRejectionCount)
                     .Append("</td><td>").Append(Sparkline(operation)).AppendLine("</td></tr>");
             }
         }

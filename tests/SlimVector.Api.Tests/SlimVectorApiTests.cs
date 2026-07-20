@@ -261,6 +261,76 @@ public sealed class SlimVectorApiTests
     }
 
     [Fact]
+    public async Task RebalanceAdminExposesDryRunStatusAndPersistedVirtualShards()
+    {
+        const string adminKey = "0123456789abcdef0123456789abcdef";
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string dataPath = Path.Combine(Path.GetTempPath(), "SlimVector.Api.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(
+                builder => builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["Storage:Path"] = dataPath,
+                        ["Storage:FlushToDisk"] = "false",
+                        ["Api:AdminEndpointsEnabled"] = "true",
+                        ["Api:AdminApiKey"] = adminKey,
+                    })));
+            using HttpClient client = factory.CreateClient();
+            using HttpResponseMessage create = await client.PostAsJsonAsync(
+                "/api/v1/collections",
+                new CreateCollectionRequest { Name = "placed", Dimension = 2 },
+                ApiJsonContext.Default.CreateCollectionRequest,
+                cancellationToken);
+            create.EnsureSuccessStatusCode();
+
+            IStorageEngine storage = factory.Services.GetRequiredService<IStorageEngine>();
+            CollectionDefinition persisted = Assert.IsType<CollectionDefinition>(
+                await storage.GetCollectionAsync("placed", cancellationToken));
+            Assert.Equal(CollectionPlacement.DefaultVirtualShardCount, persisted.Placement?.Shards.Length);
+
+            using HttpResponseMessage unauthorized = await client.GetAsync(
+                "/api/v1/admin/cluster/rebalance/plan",
+                cancellationToken);
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            using HttpRequestMessage planRequest = AdminRequest(
+                HttpMethod.Get,
+                "/api/v1/admin/cluster/rebalance/plan",
+                adminKey);
+            using HttpResponseMessage planResponse = await client.SendAsync(planRequest, cancellationToken);
+            planResponse.EnsureSuccessStatusCode();
+            RebalancePlanResponse? plan = await planResponse.Content.ReadFromJsonAsync(
+                ApiJsonContext.Default.RebalancePlanResponse,
+                cancellationToken);
+            Assert.NotNull(plan);
+            Assert.True(plan.DryRun);
+            Assert.Empty(plan.Actions);
+
+            using HttpRequestMessage statusRequest = AdminRequest(
+                HttpMethod.Get,
+                "/api/v1/admin/cluster/rebalance/status",
+                adminKey);
+            using HttpResponseMessage statusResponse = await client.SendAsync(statusRequest, cancellationToken);
+            statusResponse.EnsureSuccessStatusCode();
+            PlacementControllerResponse? status = await statusResponse.Content.ReadFromJsonAsync(
+                ApiJsonContext.Default.PlacementControllerResponse,
+                cancellationToken);
+            Assert.NotNull(status);
+            Assert.Empty(status.Moves);
+            string metrics = await client.GetStringAsync("/metrics", cancellationToken);
+            Assert.Contains("slimvector_rebalance_moves 0", metrics, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath))
+            {
+                Directory.Delete(dataPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ServerTimeoutReturnsStableProblemDetails()
     {
         const string adminKey = "0123456789abcdef0123456789abcdef";

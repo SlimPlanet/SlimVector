@@ -15,6 +15,14 @@ public interface IWriteScheduler : IAsyncDisposable
         string? clientId,
         CancellationToken cancellationToken = default);
 
+    ValueTask EnqueueAsync(
+        CollectionDefinition collection,
+        IReadOnlyList<StorageOperation> operations,
+        string? clientId,
+        bool atomic,
+        CancellationToken cancellationToken = default) =>
+        EnqueueAsync(collection, operations, clientId, cancellationToken);
+
     WriteSchedulerSnapshot GetSnapshot();
 }
 

@@ -5,6 +5,7 @@ namespace SlimVector.Indexing;
 
 public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
 {
+    public const int MinimumTrainingPointsPerCentroid = 39;
     private readonly int _dimension;
     private readonly DistanceMetric _metric;
     private readonly int _listCount;
@@ -21,6 +22,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
     private float[][] _ivfCentroids = [];
     private float[][][] _codebooks = [];
     private HashSet<string>[] _postings = [];
+    private int _trainedVectorCount;
 
     public IvfPqIndex(
         int dimension,
@@ -68,6 +70,11 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
 
     public int TrainedCodebookSize => _codebooks.Length == 0 ? 0 : _codebooks.Sum(static book => book.Length);
 
+    public int MinimumTrainingVectorCount => checked(
+        Math.Max(_listCount, _pqCentroidCount) * MinimumTrainingPointsPerCentroid);
+
+    public IvfTrainingState TrainingState { get; private set; } = IvfTrainingState.Untrained;
+
     public void Build(IReadOnlyList<(string Id, float[] Vector)> vectors)
     {
         ArgumentNullException.ThrowIfNull(vectors);
@@ -82,7 +89,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             }
         }
 
-        Train();
+        TrainIfReady();
     }
 
     public void Upsert(string id, ReadOnlySpan<float> vector)
@@ -98,11 +105,15 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         _vectors[id] = vector.ToArray();
         if (_ivfCentroids.Length == 0 || _codebooks.Length == 0)
         {
-            Train();
+            TrainIfReady();
             return;
         }
 
         EncodeAndAssign(id, vector);
+        if (_vectors.Count >= checked(Math.Max(1, _trainedVectorCount) * 2))
+        {
+            TrainingState = IvfTrainingState.NeedsRetrain;
+        }
     }
 
     public bool Remove(string id)
@@ -130,10 +141,10 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         if (_ivfCentroids.Length == 0)
         {
-            return [];
+            return SearchExact(query, limit, candidates);
         }
 
-        float[] queryVector = query.ToArray();
+        float[] queryVector = PrepareVector(query);
         int[] lists = Enumerable.Range(0, _ivfCentroids.Length)
             .Select(index => (Index: index, Distance: VectorIndexUtilities.SquaredEuclidean(queryVector, _ivfCentroids[index])))
             .OrderBy(static item => item.Distance)
@@ -148,7 +159,6 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             _vectors.Count,
             checked(limit * _rerankCandidateMultiplier));
         PriorityQueue<RankedResult, double> approximate = new();
-        float[] reconstructed = new float[_dimension];
         foreach (string id in candidateIds.Distinct(StringComparer.Ordinal))
         {
             if (!_codes.TryGetValue(id, out byte[]? code) || candidates is not null && !candidates.Contains(id))
@@ -156,8 +166,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
                 continue;
             }
 
-            Reconstruct(_assignments[id], code, reconstructed);
-            float distance = DistanceFunctions.Calculate(query, reconstructed, _metric);
+            float distance = ApproximateDistance(queryVector, _assignments[id], code);
             approximate.Enqueue(new RankedResult(id, distance), -distance);
             if (approximate.Count > approximateLimit)
             {
@@ -192,6 +201,8 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             PqCentroidCount = _pqCentroidCount,
             PqIterations = _pqIterations,
             RerankCandidateMultiplier = _rerankCandidateMultiplier,
+            TrainingState = TrainingState,
+            TrainedVectorCount = _trainedVectorCount,
             IvfCentroids = _ivfCentroids,
             Codebooks = _codebooks,
             Entries = _vectors.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
@@ -199,8 +210,8 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
                 {
                     Id = pair.Key,
                     Original = pair.Value,
-                    List = _assignments[pair.Key],
-                    Code = _codes[pair.Key],
+                    List = _assignments.GetValueOrDefault(pair.Key, -1),
+                    Code = _codes.GetValueOrDefault(pair.Key, []),
                 })
                 .ToArray(),
         };
@@ -220,7 +231,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         }
 
         VectorIndexConfiguration configuration = definition.VectorIndex;
-        if (snapshot is null || snapshot.FormatVersion != 1 || snapshot.Dimension != definition.Dimension ||
+        if (snapshot is null || snapshot.FormatVersion is not (1 or 2) || snapshot.Dimension != definition.Dimension ||
             snapshot.Metric != definition.Metric || snapshot.ListCount != configuration.IvfListCount ||
             snapshot.ProbeCount != configuration.IvfProbeCount || snapshot.IvfIterations != configuration.IvfTrainingIterations ||
             snapshot.SubvectorCount != configuration.PqSubvectorCount ||
@@ -229,10 +240,11 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             snapshot.RerankCandidateMultiplier != configuration.RerankCandidateMultiplier ||
             snapshot.IvfCentroids is null || snapshot.Codebooks is null || snapshot.Entries is null ||
             snapshot.IvfCentroids.Any(centroid => centroid?.Length != snapshot.Dimension) ||
-            snapshot.Codebooks.Length != snapshot.SubvectorCount || snapshot.Codebooks.Any(book =>
-                book is null || book.Length == 0 || book.Any(centroid => centroid?.Length != snapshot.Dimension / snapshot.SubvectorCount)) ||
+            snapshot.Codebooks.Length > 0 && (snapshot.Codebooks.Length != snapshot.SubvectorCount || snapshot.Codebooks.Any(book =>
+                book is null || book.Length == 0 || book.Any(centroid => centroid?.Length != snapshot.Dimension / snapshot.SubvectorCount))) ||
             snapshot.Entries.Any(entry => entry is null || entry.Original?.Length != snapshot.Dimension ||
-                entry.Code?.Length != snapshot.SubvectorCount || entry.List < 0 || entry.List >= snapshot.IvfCentroids.Length) ||
+                snapshot.IvfCentroids.Length > 0 && (entry.Code?.Length != snapshot.SubvectorCount ||
+                    entry.List < 0 || entry.List >= snapshot.IvfCentroids.Length)) ||
             snapshot.Entries.Select(static entry => entry.Id).Distinct(StringComparer.Ordinal).Count() != snapshot.Entries.Length)
         {
             return null;
@@ -259,18 +271,46 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
 
         index._ivfCentroids = snapshot.IvfCentroids;
         index._codebooks = snapshot.Codebooks;
+        index._trainedVectorCount = snapshot.FormatVersion == 1 ? snapshot.Entries.Length : snapshot.TrainedVectorCount;
         index._postings = Enumerable.Range(0, snapshot.IvfCentroids.Length)
             .Select(_ => new HashSet<string>(StringComparer.Ordinal))
             .ToArray();
         foreach (IvfPqEntry entry in snapshot.Entries)
         {
             index._vectors.Add(entry.Id, entry.Original);
-            index._assignments.Add(entry.Id, entry.List);
-            index._codes.Add(entry.Id, entry.Code);
-            index._postings[entry.List].Add(entry.Id);
+            if (snapshot.IvfCentroids.Length > 0)
+            {
+                index._assignments.Add(entry.Id, entry.List);
+                index._codes.Add(entry.Id, entry.Code);
+                index._postings[entry.List].Add(entry.Id);
+            }
         }
 
+        index.TrainingState = snapshot.IvfCentroids.Length == 0
+            ? snapshot.Entries.Length == 0 ? IvfTrainingState.Untrained : IvfTrainingState.Collecting
+            : snapshot.FormatVersion == 1 ? IvfTrainingState.Active : snapshot.TrainingState;
+
         return index;
+    }
+
+    public bool RebuildIfNeeded()
+    {
+        if (_vectors.Count < MinimumTrainingVectorCount || TrainingState == IvfTrainingState.Active)
+        {
+            return false;
+        }
+
+        Train();
+        return true;
+    }
+
+    private void TrainIfReady()
+    {
+        TrainingState = _vectors.Count == 0 ? IvfTrainingState.Untrained : IvfTrainingState.Collecting;
+        if (_vectors.Count >= MinimumTrainingVectorCount)
+        {
+            Train();
+        }
     }
 
     private void Train()
@@ -282,11 +322,13 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             _ivfCentroids = [];
             _codebooks = [];
             _postings = [];
+            _trainedVectorCount = 0;
+            TrainingState = IvfTrainingState.Untrained;
             return;
         }
 
         KeyValuePair<string, float[]>[] ordered = _vectors.OrderBy(static pair => pair.Key, StringComparer.Ordinal).ToArray();
-        float[][] training = ordered.Select(static pair => pair.Value).ToArray();
+        float[][] training = ordered.Select(pair => PrepareVector(pair.Value)).ToArray();
         _ivfCentroids = VectorIndexUtilities.TrainKMeans(
             training,
             _dimension,
@@ -300,10 +342,10 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         float[][] residuals = new float[ordered.Length][];
         for (int index = 0; index < ordered.Length; index++)
         {
-            int list = VectorIndexUtilities.FindNearest(ordered[index].Value, _ivfCentroids);
+            int list = VectorIndexUtilities.FindNearest(training[index], _ivfCentroids);
             _assignments.Add(ordered[index].Key, list);
             _postings[list].Add(ordered[index].Key);
-            residuals[index] = Subtract(ordered[index].Value, _ivfCentroids[list]);
+            residuals[index] = Subtract(training[index], _ivfCentroids[list]);
         }
 
         _codebooks = new float[_subvectorCount][][];
@@ -323,18 +365,23 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         {
             _codes.Add(id, Encode(vector, _assignments[id]));
         }
+
+        _trainedVectorCount = _vectors.Count;
+        TrainingState = IvfTrainingState.Active;
     }
 
     private void EncodeAndAssign(string id, ReadOnlySpan<float> vector)
     {
-        int list = VectorIndexUtilities.FindNearest(vector, _ivfCentroids);
+        float[] prepared = PrepareVector(vector);
+        int list = VectorIndexUtilities.FindNearest(prepared, _ivfCentroids);
         _assignments[id] = list;
         _postings[list].Add(id);
-        _codes[id] = Encode(vector, list);
+        _codes[id] = Encode(prepared, list);
     }
 
     private byte[] Encode(ReadOnlySpan<float> vector, int list)
     {
+        float[] prepared = _metric == DistanceMetric.Cosine ? PrepareVector(vector) : vector.ToArray();
         byte[] code = new byte[_subvectorCount];
         for (int subvector = 0; subvector < _subvectorCount; subvector++)
         {
@@ -342,7 +389,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
             float[] residual = new float[_subvectorDimension];
             for (int coordinate = 0; coordinate < _subvectorDimension; coordinate++)
             {
-                residual[coordinate] = vector[offset + coordinate] - _ivfCentroids[list][offset + coordinate];
+                residual[coordinate] = prepared[offset + coordinate] - _ivfCentroids[list][offset + coordinate];
             }
 
             code[subvector] = checked((byte)VectorIndexUtilities.FindNearest(residual, _codebooks[subvector]));
@@ -351,18 +398,75 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
         return code;
     }
 
-    private void Reconstruct(int list, ReadOnlySpan<byte> code, Span<float> destination)
+    private float ApproximateDistance(ReadOnlySpan<float> query, int list, ReadOnlySpan<byte> code)
     {
-        _ivfCentroids[list].CopyTo(destination);
+        double score = 0;
         for (int subvector = 0; subvector < _subvectorCount; subvector++)
         {
             ReadOnlySpan<float> residual = _codebooks[subvector][code[subvector]];
             int offset = subvector * _subvectorDimension;
             for (int coordinate = 0; coordinate < _subvectorDimension; coordinate++)
             {
-                destination[offset + coordinate] += residual[coordinate];
+                float reconstructed = _ivfCentroids[list][offset + coordinate] + residual[coordinate];
+                score += _metric == DistanceMetric.DotProduct
+                    ? -(double)query[offset + coordinate] * reconstructed
+                    : Math.Pow(query[offset + coordinate] - reconstructed, 2);
             }
         }
+
+        return _metric == DistanceMetric.Euclidean ? (float)Math.Sqrt(score) : (float)score;
+    }
+
+    private RankedResult[] SearchExact(
+        ReadOnlySpan<float> query,
+        int limit,
+        IReadOnlySet<string>? candidates)
+    {
+        PriorityQueue<RankedResult, double> top = new();
+        foreach ((string id, float[] vector) in _vectors)
+        {
+            if (candidates is not null && !candidates.Contains(id))
+            {
+                continue;
+            }
+
+            float distance = DistanceFunctions.Calculate(query, vector, _metric);
+            top.Enqueue(new RankedResult(id, distance), -distance);
+            if (top.Count > limit)
+            {
+                top.Dequeue();
+            }
+        }
+
+        return VectorIndexUtilities.Drain(top);
+    }
+
+    private float[] PrepareVector(ReadOnlySpan<float> vector)
+    {
+        float[] prepared = vector.ToArray();
+        if (_metric != DistanceMetric.Cosine)
+        {
+            return prepared;
+        }
+
+        double squaredNorm = 0;
+        foreach (float value in prepared)
+        {
+            squaredNorm += value * value;
+        }
+
+        if (squaredNorm <= double.Epsilon)
+        {
+            return prepared;
+        }
+
+        float inverseNorm = 1F / MathF.Sqrt((float)squaredNorm);
+        for (int index = 0; index < prepared.Length; index++)
+        {
+            prepared[index] *= inverseNorm;
+        }
+
+        return prepared;
     }
 
     private static float[] Subtract(ReadOnlySpan<float> left, ReadOnlySpan<float> right)
@@ -380,7 +484,7 @@ public sealed class IvfPqIndex : IVectorIndex, IBulkVectorIndex
 [MemoryPackable]
 internal sealed partial class IvfPqSnapshot
 {
-    public int FormatVersion { get; set; } = 1;
+    public int FormatVersion { get; set; } = 2;
 
     public int Dimension { get; set; }
 
@@ -399,6 +503,10 @@ internal sealed partial class IvfPqSnapshot
     public int PqIterations { get; set; }
 
     public int RerankCandidateMultiplier { get; set; }
+
+    public IvfTrainingState TrainingState { get; set; }
+
+    public int TrainedVectorCount { get; set; }
 
     public float[][] IvfCentroids { get; set; } = [];
 

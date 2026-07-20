@@ -9,7 +9,7 @@ A single consensus log would serialize every collection write and make one hot c
 
 ## Decision
 
-Run one catalog group and a configurable number of independent data groups on every cluster node using DotNext.Net.Cluster 6.x. Map collection ids deterministically to data groups. Give every group an independent TCP port offset, WAL, election, snapshot schedule, applied index, and idempotency history. Batch/fairness workers operate per data group.
+Run one catalog group and a configurable number of independent data groups on every cluster node using DotNext.Net.Cluster 6.x. Give every group an independent TCP port offset, WAL, election, snapshot schedule, applied index, and idempotency history. Batch/fairness workers operate per data group. ADR 0005 supersedes the original whole-collection hash with persisted virtual-shard placement while retaining this bounded physical group pool.
 
 The catalog is the authority for definitions/placement. Data commands include the collection definition needed for deterministic state-machine validation. Changing the number of data groups is an explicit resharding event, not a transparent configuration edit.
 

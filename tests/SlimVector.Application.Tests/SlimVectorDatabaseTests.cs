@@ -202,6 +202,53 @@ public sealed class SlimVectorDatabaseTests
         Assert.Equal("one", Assert.Single(response.Hits).Id);
     }
 
+    [Fact]
+    public async Task VectorSearchFansOutAcrossPlacementGroupsAndMergesGlobalTopK()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        await using DatabaseFixture fixture = await DatabaseFixture.CreateAsync(
+            directory.Path,
+            cancellationToken,
+            multiGroup: true);
+        CollectionDefinition collection = await fixture.Database.CreateCollectionAsync(
+            "fanout",
+            2,
+            DistanceMetric.Euclidean,
+            new VectorIndexConfiguration { Kind = VectorIndexKind.Flat },
+            cancellationToken);
+        Assert.Equal(2, collection.Placement!.Shards.Select(static shard => shard.DataGroupId).Distinct().Count());
+
+        Dictionary<string, string> idByGroup = new(StringComparer.Ordinal);
+        for (int index = 0; idByGroup.Count < 2; index++)
+        {
+            string id = $"fanout-{index}";
+            ShardRoute route = collection.Placement.Resolve(collection.Id, id);
+            idByGroup.TryAdd(route.DataGroupId, id);
+        }
+
+        string[] ids = idByGroup.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .Select(static pair => pair.Value)
+            .ToArray();
+        BatchMutationResult mutation = await fixture.Database.MutateAsync(
+            collection.Name,
+            [Add(ids[0], "first shard", [10, 10], 1), Add(ids[1], "second shard", [1, 1], 1)],
+            atomic: false,
+            cancellationToken: cancellationToken);
+        Assert.Equal(2, mutation.Succeeded);
+
+        SearchResponse response = await fixture.Database.SearchAsync(
+            collection.Name,
+            new SearchRequest { Mode = SearchMode.Vector, Vector = [1.1f, 1.1f], Limit = 1 },
+            cancellationToken);
+
+        Assert.Equal(ids[1], Assert.Single(response.Hits).Id);
+        OperationalMetricsSnapshot metrics = fixture.Metrics.GetSnapshot();
+        Assert.Equal(1, metrics.FanOutSearches);
+        Assert.Equal(2, metrics.FanOutPartitions);
+        Assert.Equal(2, fixture.MultiGroupConsensus!.LastBarrierGroupCount);
+    }
+
     private static DocumentMutation Add(string id, string text, float[] vector, long year) => new()
     {
         Kind = DocumentMutationKind.Add,
@@ -227,26 +274,38 @@ public sealed class SlimVectorDatabaseTests
             IStorageEngine storage,
             StorageRaftCommandApplier applier,
             IConsensusCoordinator consensus,
-            IWriteScheduler writeScheduler)
+            IWriteScheduler writeScheduler,
+            OperationalMetrics metrics,
+            MultiGroupConsensus? multiGroupConsensus)
         {
             Database = database;
             _storage = storage;
             _applier = applier;
             _consensus = consensus;
             _writeScheduler = writeScheduler;
+            Metrics = metrics;
+            MultiGroupConsensus = multiGroupConsensus;
         }
 
         public ISlimVectorDatabase Database { get; }
+
+        public OperationalMetrics Metrics { get; }
+
+        public MultiGroupConsensus? MultiGroupConsensus { get; }
 
         public static async Task<DatabaseFixture> CreateAsync(
             string path,
             CancellationToken cancellationToken,
             TextIndexOptions? textIndexOptions = null,
-            MetadataIndexOptions? metadataIndexOptions = null)
+            MetadataIndexOptions? metadataIndexOptions = null,
+            bool multiGroup = false)
         {
             IStorageEngine storage = new FileSystemStorageEngine(new StorageSettings { Path = path, FlushToDisk = false });
             StorageRaftCommandApplier applier = new(storage);
-            IConsensusCoordinator consensus = new DirectConsensusCoordinator(applier);
+            DirectConsensusCoordinator directConsensus = new(applier);
+            MultiGroupConsensus? multiGroupConsensus = multiGroup ? new MultiGroupConsensus(directConsensus, storage) : null;
+            IConsensusCoordinator consensus = multiGroupConsensus is null ? directConsensus : multiGroupConsensus;
+            OperationalMetrics metrics = new();
             IWriteScheduler writeScheduler = new AdaptiveWriteScheduler(
                 consensus,
                 Options.Create(new AdaptiveBatchingOptions()),
@@ -260,9 +319,10 @@ public sealed class SlimVectorDatabaseTests
                 Options.Create(new CollectionsOptions()),
                 Options.Create(new VectorIndexOptions()),
                 Options.Create(textIndexOptions ?? new TextIndexOptions()),
-                Options.Create(metadataIndexOptions ?? new MetadataIndexOptions()));
+                Options.Create(metadataIndexOptions ?? new MetadataIndexOptions()),
+                metrics: metrics);
             await database.InitializeAsync(cancellationToken);
-            return new DatabaseFixture(database, storage, applier, consensus, writeScheduler);
+            return new DatabaseFixture(database, storage, applier, consensus, writeScheduler, metrics, multiGroupConsensus);
         }
 
         public async ValueTask DisposeAsync()
@@ -272,5 +332,76 @@ public sealed class SlimVectorDatabaseTests
             _applier.Dispose();
             _storage.Dispose();
         }
+    }
+
+    private sealed class MultiGroupConsensus(IConsensusCoordinator inner, IStorageEngine storage) : IConsensusCoordinator
+    {
+        public event Action<Guid?>? StateChanged
+        {
+            add => inner.StateChanged += value;
+            remove => inner.StateChanged -= value;
+        }
+
+        public ExecutionMode Mode => inner.Mode;
+
+        public bool IsReady => inner.IsReady;
+
+        public int LastBarrierGroupCount { get; private set; }
+
+        public IReadOnlyList<RaftGroupStatus> GetStatuses() => inner.GetStatuses();
+
+        public ValueTask StartAsync(CancellationToken cancellationToken = default) => inner.StartAsync(cancellationToken);
+
+        public ValueTask StopAsync(CancellationToken cancellationToken = default) => inner.StopAsync(cancellationToken);
+
+        public string GetDataGroupId(Guid collectionId) => "data-0";
+
+        public CollectionPlacement CreateInitialPlacement(
+            Guid collectionId,
+            int virtualShardCount = CollectionPlacement.DefaultVirtualShardCount) =>
+            CollectionPlacement.Create(collectionId, ["data-0", "data-1"], virtualShardCount);
+
+        public ValueTask UpsertCollectionAsync(
+            CollectionDefinition collection,
+            CancellationToken cancellationToken = default) => inner.UpsertCollectionAsync(collection, cancellationToken);
+
+        public ValueTask DeleteCollectionAsync(
+            CollectionDefinition collection,
+            CancellationToken cancellationToken = default) => inner.DeleteCollectionAsync(collection, cancellationToken);
+
+        public ValueTask AppendAsync(
+            CollectionDefinition collection,
+            IReadOnlyList<StorageOperation> operations,
+            CancellationToken cancellationToken = default) => storage.AppendAsync(collection.Id, operations, cancellationToken);
+
+        public async ValueTask AppendBatchAsync(
+            IReadOnlyList<CollectionWrite> writes,
+            CancellationToken cancellationToken = default)
+        {
+            foreach (CollectionWrite write in writes)
+            {
+                await storage.AppendAsync(write.Collection.Id, write.Operations, cancellationToken);
+            }
+        }
+
+        public ValueTask ApplyReadBarrierAsync(
+            Guid? collectionId,
+            ReadConsistency consistency,
+            CancellationToken cancellationToken = default) =>
+            inner.ApplyReadBarrierAsync(collectionId, consistency, cancellationToken);
+
+        public ValueTask ApplyReadBarriersAsync(
+            CollectionDefinition collection,
+            ReadConsistency consistency,
+            CancellationToken cancellationToken = default)
+        {
+            LastBarrierGroupCount = collection.Placement!.ReadRoutes()
+                .Select(static route => route.DataGroupId)
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+            return inner.ApplyReadBarrierAsync(collection.Id, consistency, cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }

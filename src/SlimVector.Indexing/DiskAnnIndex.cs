@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using MemoryPack;
@@ -10,7 +11,7 @@ namespace SlimVector.Indexing;
 public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
 {
     private const int HeaderSize = 32;
-    private const int CandidatePoolLimit = 128;
+    private const int ConstructionSampleLimit = 128;
     private static readonly byte[] Magic = "SLVDA001"u8.ToArray();
     private readonly int _dimension;
     private readonly DistanceMetric _metric;
@@ -24,11 +25,13 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
     private readonly Dictionary<string, int> _positions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float[]> _delta = new(StringComparer.Ordinal);
     private readonly HashSet<string> _deleted = new(StringComparer.Ordinal);
+    private readonly ConcurrentBag<DiskAnnSearchContext> _searchContexts = [];
     private FileStream? _generationStream;
     private DiskPageCache? _pageCache;
     private string[] _ids = [];
     private long _generation;
     private long? _previousGeneration;
+    private int _entryPoint;
     private bool _disposed;
 
     public DiskAnnIndex(
@@ -142,41 +145,42 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         VectorIndexUtilities.ValidateVector(query, _dimension);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        PriorityQueue<RankedResult, double> top = new();
-        if (_ids.Length > 0)
+        DiskAnnSearchContext context = RentSearchContext(limit);
+        try
         {
-            if (candidates is not null && candidates.Count <= Math.Max(_searchListSize, limit * 8))
+            if (_ids.Length > 0)
             {
-                foreach (string id in candidates)
+                if (candidates is not null && candidates.Count <= Math.Max(_searchListSize, limit * 8))
                 {
-                    if (_positions.TryGetValue(id, out int position) && !_deleted.Contains(id))
+                    foreach (string id in candidates)
                     {
-                        AddResult(query, id, ReadVector(position), limit, top);
+                        if (_positions.TryGetValue(id, out int position) && !_deleted.Contains(id))
+                        {
+                            ReadVector(position, context.Vector, context.RecordBytes);
+                            AddResult(query, id, context.Vector, limit, context.Results);
+                        }
                     }
                 }
-            }
-            else
-            {
-                foreach (int position in Traverse(query))
+                else
                 {
-                    string id = _ids[position];
-                    if (!_deleted.Contains(id) && (candidates is null || candidates.Contains(id)))
-                    {
-                        AddResult(query, id, ReadVector(position), limit, top);
-                    }
+                    Traverse(query, limit, candidates, context);
                 }
             }
-        }
 
-        foreach ((string id, float[] vector) in _delta)
-        {
-            if (candidates is null || candidates.Contains(id))
+            foreach ((string id, float[] vector) in _delta)
             {
-                AddResult(query, id, vector, limit, top);
+                if (candidates is null || candidates.Contains(id))
+                {
+                    AddResult(query, id, vector, limit, context.Results);
+                }
             }
-        }
 
-        return VectorIndexUtilities.Drain(top);
+            return VectorIndexUtilities.Drain(context.Results);
+        }
+        finally
+        {
+            ReturnSearchContext(context);
+        }
     }
 
     public bool Rollback()
@@ -298,47 +302,43 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
         }
     }
 
-    private IEnumerable<int> Traverse(ReadOnlySpan<float> query)
+    private void Traverse(
+        ReadOnlySpan<float> query,
+        int limit,
+        IReadOnlySet<string>? candidates,
+        DiskAnnSearchContext context)
     {
-        HashSet<int> visited = [];
-        PriorityQueue<int, double> pending = new();
-        PriorityQueue<RankedResult, double> best = new();
-        float entryDistance = DistanceFunctions.Calculate(query, ReadVector(0), _metric);
-        pending.Enqueue(0, entryDistance);
+        ReadVector(_entryPoint, context.Vector, context.RecordBytes);
+        float entryDistance = DistanceFunctions.Calculate(query, context.Vector, _metric);
+        context.MarkScheduled(_entryPoint);
+        context.Pending.Enqueue(_entryPoint, entryDistance);
         int expanded = 0;
-        while (pending.Count > 0 && expanded < _searchListSize)
+        while (context.Pending.Count > 0 && expanded < _searchListSize)
         {
-            int width = Math.Min(_beamWidth, pending.Count);
+            int width = Math.Min(_beamWidth, context.Pending.Count);
             for (int beam = 0; beam < width && expanded < _searchListSize; beam++)
             {
-                int position = pending.Dequeue();
-                if (!visited.Add(position))
-                {
-                    continue;
-                }
-
+                int position = context.Pending.Dequeue();
                 expanded++;
-                float[] vector = ReadVector(position);
-                float distance = DistanceFunctions.Calculate(query, vector, _metric);
-                best.Enqueue(new RankedResult(position.ToString(System.Globalization.CultureInfo.InvariantCulture), distance), -distance);
-                if (best.Count > _searchListSize)
+                int neighborCount = ReadRecord(position, context.Vector, context.Neighbors, context.RecordBytes);
+                string id = _ids[position];
+                if (!_deleted.Contains(id) && (candidates is null || candidates.Contains(id)))
                 {
-                    best.Dequeue();
+                    AddResult(query, id, context.Vector, limit, context.Results);
                 }
 
-                foreach (int neighbor in ReadNeighbors(position))
+                for (int neighborIndex = 0; neighborIndex < neighborCount; neighborIndex++)
                 {
-                    if (!visited.Contains(neighbor))
+                    int neighbor = context.Neighbors[neighborIndex];
+                    if (context.MarkScheduled(neighbor))
                     {
-                        float neighborDistance = DistanceFunctions.Calculate(query, ReadVector(neighbor), _metric);
-                        pending.Enqueue(neighbor, neighborDistance);
+                        ReadVector(neighbor, context.NeighborVector, context.RecordBytes);
+                        float neighborDistance = DistanceFunctions.Calculate(query, context.NeighborVector, _metric);
+                        context.Pending.Enqueue(neighbor, neighborDistance);
                     }
                 }
             }
         }
-
-        return VectorIndexUtilities.Drain(best)
-            .Select(static result => int.Parse(result.Id, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static void AddResult(
@@ -390,14 +390,14 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
     private void CommitGeneration(IReadOnlyList<(string Id, float[] Vector)> vectors)
     {
         long nextGeneration = checked(_generation + 1);
-        List<int>[] graph = BuildVamanaGraph(vectors);
+        (List<int>[] graph, int entryPoint) = BuildVamanaGraph(vectors);
         string dataPath = DataPath(nextGeneration);
         string idsPath = IdsPath(nextGeneration);
         string temporaryData = dataPath + ".tmp-" + Guid.NewGuid().ToString("N");
         string temporaryIds = idsPath + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            WriteData(temporaryData, vectors, graph);
+            WriteData(temporaryData, vectors, graph, entryPoint);
             WriteIds(temporaryIds, vectors.Select(static item => item.Id));
             File.Move(temporaryData, dataPath, overwrite: true);
             File.Move(temporaryIds, idsPath, overwrite: true);
@@ -425,85 +425,143 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
         DeleteObsoleteGenerations();
     }
 
-    private List<int>[] BuildVamanaGraph(IReadOnlyList<(string Id, float[] Vector)> vectors)
+    private (List<int>[] Graph, int EntryPoint) BuildVamanaGraph(IReadOnlyList<(string Id, float[] Vector)> vectors)
     {
         List<int>[] graph = Enumerable.Range(0, vectors.Count).Select(_ => new List<int>(_maxDegree)).ToArray();
+        if (vectors.Count == 0)
+        {
+            return (graph, 0);
+        }
+
+        int entryPoint = FindApproximateMedoid(vectors);
         for (int node = 0; node < vectors.Count; node++)
         {
-            IEnumerable<int> pool = CandidatePool(node, vectors.Count);
-            (int Index, float Distance)[] ordered = pool
-                .Where(candidate => candidate != node)
-                .Select(candidate => (
-                    Index: candidate,
-                    Distance: DistanceFunctions.Calculate(vectors[node].Vector, vectors[candidate].Vector, _metric)))
-                .OrderBy(static item => item.Distance)
-                .ThenBy(static item => item.Index)
-                .ToArray();
-            foreach ((int candidate, float distance) in ordered)
+            if (node > 0)
             {
-                bool occluded = graph[node].Any(selected =>
-                    1.2F * DistanceFunctions.Calculate(vectors[candidate].Vector, vectors[selected].Vector, _metric) <= distance);
-                if (!occluded || graph[node].Count < Math.Min(2, _maxDegree))
-                {
-                    graph[node].Add(candidate);
-                    if (graph[node].Count == _maxDegree)
-                    {
-                        break;
-                    }
-                }
-            }
-
-            if (node > 0 && !graph[node].Contains(node - 1))
-            {
-                if (graph[node].Count == _maxDegree)
-                {
-                    graph[node][^1] = node - 1;
-                }
-                else
-                {
-                    graph[node].Add(node - 1);
-                }
+                graph[node].Add(node - 1);
+                graph[node - 1].Add(node);
             }
         }
 
-        for (int node = 1; node < graph.Length; node++)
+        int constructionListSize = Math.Max(_maxDegree * 2, Math.Min(_searchListSize, 256));
+        int[] order = Enumerable.Range(0, vectors.Count)
+            .OrderBy(static node => unchecked((uint)node * 2_654_435_761U))
+            .ToArray();
+        for (int pass = 0; pass < 2; pass++)
         {
-            if (!graph[node - 1].Contains(node))
+            IEnumerable<int> traversalOrder = pass == 0 ? order : order.Reverse();
+            foreach (int node in traversalOrder)
             {
-                if (graph[node - 1].Count == _maxDegree)
+                HashSet<int> candidates = GreedySearchInMemory(
+                    vectors,
+                    graph,
+                    entryPoint,
+                    vectors[node].Vector,
+                    constructionListSize);
+                candidates.Remove(node);
+                candidates.UnionWith(graph[node]);
+                graph[node] = RobustPrune(node, candidates, vectors);
+                foreach (int neighbor in graph[node].ToArray())
                 {
-                    graph[node - 1][^1] = node;
-                }
-                else
-                {
-                    graph[node - 1].Add(node);
+                    if (graph[neighbor].Contains(node))
+                    {
+                        continue;
+                    }
+
+                    HashSet<int> reverseCandidates = [.. graph[neighbor], node];
+                    graph[neighbor] = RobustPrune(neighbor, reverseCandidates, vectors);
                 }
             }
         }
 
-        return graph;
+        return (graph, entryPoint);
     }
 
-    private static IEnumerable<int> CandidatePool(int node, int count)
+    private HashSet<int> GreedySearchInMemory(
+        IReadOnlyList<(string Id, float[] Vector)> vectors,
+        List<int>[] graph,
+        int entryPoint,
+        ReadOnlySpan<float> query,
+        int searchListSize)
     {
-        if (count <= CandidatePoolLimit)
+        HashSet<int> visited = [];
+        PriorityQueue<int, double> pending = new();
+        pending.Enqueue(entryPoint, DistanceFunctions.Calculate(query, vectors[entryPoint].Vector, _metric));
+        while (pending.Count > 0 && visited.Count < searchListSize)
         {
-            return Enumerable.Range(0, count);
+            int node = pending.Dequeue();
+            if (!visited.Add(node))
+            {
+                continue;
+            }
+
+            foreach (int neighbor in graph[node])
+            {
+                if (!visited.Contains(neighbor))
+                {
+                    pending.Enqueue(neighbor, DistanceFunctions.Calculate(query, vectors[neighbor].Vector, _metric));
+                }
+            }
         }
 
-        int stride = Math.Max(1, count / CandidatePoolLimit);
-        int offset = node % stride;
-        return Enumerable.Range(0, CandidatePoolLimit)
-            .Select(index => (offset + index * stride) % count)
-            .Append(Math.Max(0, node - 1))
-            .Append(Math.Min(count - 1, node + 1))
-            .Distinct();
+        return visited;
+    }
+
+    private List<int> RobustPrune(
+        int node,
+        IEnumerable<int> candidates,
+        IReadOnlyList<(string Id, float[] Vector)> vectors)
+    {
+        (int Index, float Distance)[] ordered = candidates
+            .Where(candidate => candidate != node)
+            .Distinct()
+            .Select(candidate => (
+                Index: candidate,
+                Distance: DistanceFunctions.Calculate(vectors[node].Vector, vectors[candidate].Vector, _metric)))
+            .OrderBy(static candidate => candidate.Distance)
+            .ThenBy(static candidate => candidate.Index)
+            .ToArray();
+        List<int> selected = new(_maxDegree);
+        foreach ((int candidate, float distance) in ordered)
+        {
+            bool occluded = selected.Any(existing =>
+                1.2F * DistanceFunctions.Calculate(vectors[candidate].Vector, vectors[existing].Vector, _metric) <= distance);
+            if (!occluded || selected.Count < Math.Min(2, _maxDegree))
+            {
+                selected.Add(candidate);
+                if (selected.Count == _maxDegree)
+                {
+                    break;
+                }
+            }
+        }
+
+        return selected;
+    }
+
+    private int FindApproximateMedoid(IReadOnlyList<(string Id, float[] Vector)> vectors)
+    {
+        int sampleCount = Math.Min(ConstructionSampleLimit, vectors.Count);
+        int stride = Math.Max(1, vectors.Count / sampleCount);
+        int[] sample = Enumerable.Range(0, sampleCount)
+            .Select(index => Math.Min(vectors.Count - 1, index * stride))
+            .Distinct()
+            .ToArray();
+        return sample
+            .Select(candidate => (
+                Candidate: candidate,
+                Total: sample.Sum(other =>
+                    (double)DistanceFunctions.Calculate(vectors[candidate].Vector, vectors[other].Vector, _metric))))
+            .OrderBy(static item => item.Total)
+            .ThenBy(static item => item.Candidate)
+            .First().Candidate;
     }
 
     private void WriteData(
         string path,
         IReadOnlyList<(string Id, float[] Vector)> vectors,
-        List<int>[] graph)
+        List<int>[] graph,
+        int entryPoint)
     {
         using FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024);
         Span<byte> header = stackalloc byte[HeaderSize];
@@ -512,6 +570,7 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
         BinaryPrimitives.WriteInt32LittleEndian(header[12..], vectors.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header[16..], _maxDegree);
         BinaryPrimitives.WriteInt32LittleEndian(header[20..], RecordSize);
+        BinaryPrimitives.WriteInt32LittleEndian(header[24..], entryPoint);
         stream.Write(header);
         byte[] record = new byte[RecordSize];
         for (int index = 0; index < vectors.Count; index++)
@@ -561,6 +620,13 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
             PageSize,
             FileOptions.RandomAccess);
         _pageCache = new DiskPageCache(_generationStream.SafeFileHandle, PageSize, CachePages);
+        Span<byte> header = stackalloc byte[HeaderSize];
+        _pageCache.Read(0, header);
+        _entryPoint = ids.Length == 0 ? 0 : BinaryPrimitives.ReadInt32LittleEndian(header[24..]);
+        if (ids.Length > 0 && (_entryPoint < 0 || _entryPoint >= ids.Length))
+        {
+            throw new InvalidDataException("The DiskANN entry point is outside the generation.");
+        }
         _generation = generation;
         _previousGeneration = previous;
         _ids = ids;
@@ -580,6 +646,8 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
             BinaryPrimitives.ReadInt32LittleEndian(header[12..]) != expectedCount ||
             BinaryPrimitives.ReadInt32LittleEndian(header[16..]) != _maxDegree ||
             BinaryPrimitives.ReadInt32LittleEndian(header[20..]) != RecordSize ||
+            expectedCount > 0 && (BinaryPrimitives.ReadInt32LittleEndian(header[24..]) < 0 ||
+                BinaryPrimitives.ReadInt32LittleEndian(header[24..]) >= expectedCount) ||
             stream.Length != HeaderSize + (long)expectedCount * RecordSize)
         {
             throw new InvalidDataException("The DiskANN generation artifact is invalid.");
@@ -588,38 +656,67 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
 
     private float[] ReadVector(int position)
     {
-        byte[] bytes = new byte[_dimension * sizeof(float)];
-        _pageCache!.Read(RecordOffset(position), bytes);
         float[] vector = new float[_dimension];
-        for (int coordinate = 0; coordinate < _dimension; coordinate++)
-        {
-            vector[coordinate] = BinaryPrimitives.ReadSingleLittleEndian(bytes.AsSpan(coordinate * sizeof(float)));
-        }
-
+        byte[] bytes = new byte[_dimension * sizeof(float)];
+        ReadVector(position, vector, bytes);
         return vector;
     }
 
-    private int[] ReadNeighbors(int position)
+    private void ReadVector(int position, Span<float> destination, Span<byte> bytes)
     {
-        byte[] bytes = new byte[sizeof(int) + _maxDegree * sizeof(int)];
-        _pageCache!.Read(RecordOffset(position) + _dimension * sizeof(float), bytes);
-        int count = BinaryPrimitives.ReadInt32LittleEndian(bytes);
+        Span<byte> vectorBytes = bytes[..checked(_dimension * sizeof(float))];
+        _pageCache!.Read(RecordOffset(position), vectorBytes);
+        for (int coordinate = 0; coordinate < _dimension; coordinate++)
+        {
+            destination[coordinate] = BinaryPrimitives.ReadSingleLittleEndian(vectorBytes[(coordinate * sizeof(float))..]);
+        }
+    }
+
+    private int ReadRecord(int position, Span<float> vector, Span<int> neighbors, Span<byte> bytes)
+    {
+        Span<byte> record = bytes[..RecordSize];
+        _pageCache!.Read(RecordOffset(position), record);
+        for (int coordinate = 0; coordinate < _dimension; coordinate++)
+        {
+            vector[coordinate] = BinaryPrimitives.ReadSingleLittleEndian(record[(coordinate * sizeof(float))..]);
+        }
+
+        int neighborsOffset = _dimension * sizeof(float);
+        int count = BinaryPrimitives.ReadInt32LittleEndian(record[neighborsOffset..]);
         if (count < 0 || count > _maxDegree)
         {
             throw new InvalidDataException("The DiskANN neighbor record is invalid.");
         }
 
-        int[] neighbors = new int[count];
         for (int index = 0; index < count; index++)
         {
-            neighbors[index] = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(sizeof(int) + index * sizeof(int)));
+            neighbors[index] = BinaryPrimitives.ReadInt32LittleEndian(
+                record[(neighborsOffset + sizeof(int) + index * sizeof(int))..]);
             if (neighbors[index] < 0 || neighbors[index] >= _ids.Length)
             {
                 throw new InvalidDataException("The DiskANN neighbor position is invalid.");
             }
         }
 
-        return neighbors;
+        return count;
+    }
+
+    private DiskAnnSearchContext RentSearchContext(int limit)
+    {
+        if (!_searchContexts.TryTake(out DiskAnnSearchContext? context))
+        {
+            context = new DiskAnnSearchContext();
+        }
+
+        context.Reset(_ids.Length, _dimension, _maxDegree, RecordSize, Math.Max(limit, _searchListSize));
+        return context;
+    }
+
+    private void ReturnSearchContext(DiskAnnSearchContext context)
+    {
+        context.Pending.Clear();
+        context.Results.Clear();
+        _searchContexts.Add(context);
     }
 
     private void WriteManifest(long active, long? previous, string dataPath)
@@ -684,24 +781,97 @@ public sealed class DiskAnnIndex : IVectorIndex, IBulkVectorIndex, IDisposable
     private string IdsPath(long generation) => Path.Combine(_artifactDirectory, $"generation-{generation}.ids");
 }
 
+internal sealed class DiskAnnSearchContext
+{
+    private int[] _scheduled = [];
+    private int _epoch;
+
+    public PriorityQueue<int, float> Pending { get; } = new();
+
+    public PriorityQueue<RankedResult, double> Results { get; } = new();
+
+    public float[] Vector { get; private set; } = [];
+
+    public float[] NeighborVector { get; private set; } = [];
+
+    public int[] Neighbors { get; private set; } = [];
+
+    public byte[] RecordBytes { get; private set; } = [];
+
+    public void Reset(int vectorCount, int dimension, int maxDegree, int recordSize, int queueCapacity)
+    {
+        if (_scheduled.Length < vectorCount)
+        {
+            _scheduled = new int[vectorCount];
+            _epoch = 0;
+        }
+
+        if (Vector.Length < dimension)
+        {
+            Vector = new float[dimension];
+            NeighborVector = new float[dimension];
+        }
+
+        if (Neighbors.Length < maxDegree)
+        {
+            Neighbors = new int[maxDegree];
+        }
+
+        if (RecordBytes.Length < recordSize)
+        {
+            RecordBytes = new byte[recordSize];
+        }
+
+        _epoch++;
+        if (_epoch == int.MaxValue)
+        {
+            Array.Clear(_scheduled);
+            _epoch = 1;
+        }
+
+        Pending.Clear();
+        Results.Clear();
+        Pending.EnsureCapacity(queueCapacity);
+        Results.EnsureCapacity(queueCapacity);
+    }
+
+    public bool MarkScheduled(int position)
+    {
+        if (_scheduled[position] == _epoch)
+        {
+            return false;
+        }
+
+        _scheduled[position] = _epoch;
+        return true;
+    }
+}
+
 internal sealed class DiskPageCache : IDisposable
 {
     private readonly SafeFileHandle _handle;
     private readonly int _pageSize;
-    private readonly int _capacity;
-    private readonly Dictionary<long, LinkedListNode<Page>> _pages = [];
-    private readonly LinkedList<Page> _lru = [];
+    private readonly object _sync = new();
+    private readonly Dictionary<long, int> _pageIndexes;
+    private readonly PageSlot[] _slots;
+    private int _count;
+    private int _nextVictim;
+    private long _hits;
+    private long _misses;
 
     public DiskPageCache(SafeFileHandle handle, int pageSize, int capacity)
     {
         _handle = handle;
         _pageSize = pageSize;
-        _capacity = capacity;
+        _pageIndexes = new Dictionary<long, int>(capacity);
+        _slots = Enumerable.Range(0, capacity)
+            .Select(_ => new PageSlot(pageSize))
+            .ToArray();
     }
 
-    public long Hits { get; private set; }
+    public long Hits => Interlocked.Read(ref _hits);
 
-    public long Misses { get; private set; }
+    public long Misses => Interlocked.Read(ref _misses);
 
     public void Read(long offset, Span<byte> destination)
     {
@@ -711,51 +881,79 @@ internal sealed class DiskPageCache : IDisposable
             long absolute = offset + copied;
             long pageNumber = absolute / _pageSize;
             int pageOffset = (int)(absolute % _pageSize);
-            Page page = GetPage(pageNumber);
-            int count = Math.Min(destination.Length - copied, page.ValidLength - pageOffset);
-            if (count <= 0)
+            lock (_sync)
             {
-                throw new EndOfStreamException("The DiskANN generation ended unexpectedly.");
-            }
+                PageSlot page = GetPage(pageNumber);
+                int count = Math.Min(destination.Length - copied, page.ValidLength - pageOffset);
+                if (count <= 0)
+                {
+                    throw new EndOfStreamException("The DiskANN generation ended unexpectedly.");
+                }
 
-            page.Bytes.AsSpan(pageOffset, count).CopyTo(destination[copied..]);
-            copied += count;
+                page.Bytes.AsSpan(pageOffset, count).CopyTo(destination[copied..]);
+                copied += count;
+            }
         }
     }
 
     public void Dispose()
     {
-        _pages.Clear();
-        _lru.Clear();
+        lock (_sync)
+        {
+            _pageIndexes.Clear();
+            _count = 0;
+        }
     }
 
-    private Page GetPage(long number)
+    private PageSlot GetPage(long number)
     {
-        if (_pages.TryGetValue(number, out LinkedListNode<Page>? existing))
+        if (_pageIndexes.TryGetValue(number, out int existingIndex))
         {
-            Hits++;
-            _lru.Remove(existing);
-            _lru.AddFirst(existing);
-            return existing.Value;
+            _hits++;
+            PageSlot existing = _slots[existingIndex];
+            existing.Referenced = true;
+            return existing;
         }
 
-        Misses++;
-        byte[] bytes = new byte[_pageSize];
-        int length = RandomAccess.Read(_handle, bytes, number * _pageSize);
-        Page page = new(number, bytes, length);
-        LinkedListNode<Page> node = _lru.AddFirst(page);
-        _pages.Add(number, node);
-        if (_pages.Count > _capacity)
+        _misses++;
+        int slotIndex;
+        if (_count < _slots.Length)
         {
-            LinkedListNode<Page> last = _lru.Last!;
-            _pages.Remove(last.Value.Number);
-            _lru.RemoveLast();
+            slotIndex = _count++;
+        }
+        else
+        {
+            while (_slots[_nextVictim].Referenced)
+            {
+                _slots[_nextVictim].Referenced = false;
+                _nextVictim = (_nextVictim + 1) % _slots.Length;
+            }
+
+            slotIndex = _nextVictim;
+            _nextVictim = (_nextVictim + 1) % _slots.Length;
+            _pageIndexes.Remove(_slots[slotIndex].Number);
         }
 
-        return page;
+        PageSlot slot = _slots[slotIndex];
+        slot.Number = number;
+        slot.ValidLength = RandomAccess.Read(_handle, slot.Bytes, number * _pageSize);
+        slot.Referenced = true;
+        _pageIndexes.Add(number, slotIndex);
+        return slot;
     }
 
-    private sealed record Page(long Number, byte[] Bytes, int ValidLength);
+    private sealed class PageSlot
+    {
+        public PageSlot(int pageSize) => Bytes = new byte[pageSize];
+
+        public long Number { get; set; } = -1;
+
+        public byte[] Bytes { get; }
+
+        public int ValidLength { get; set; }
+
+        public bool Referenced { get; set; }
+    }
 }
 
 [MemoryPackable]

@@ -107,5 +107,13 @@ These routes use the same administrator key:
 | `POST` | `/admin/cluster/membership/demote` | Stage a serialized safe removal |
 | `POST` | `/admin/cluster/membership/remove` | Consensus-remove after safety checks |
 | `POST` | `/admin/cluster/membership/transfer-leadership` | Resign the local group leader before maintenance |
+| `GET` | `/admin/cluster/rebalance/plan?drainDataGroupId=data-0` | Build a read-only placement plan |
+| `POST` | `/admin/cluster/rebalance/approve` | Approve a plan by `planId` |
+| `GET` | `/admin/cluster/rebalance/status` | List durable in-flight shard moves |
+| `POST` | `/admin/cluster/rebalance/advance` | Advance each move by one resumable phase |
+| `POST` | `/admin/cluster/rebalance/pause` | Pause automatic move progression |
+| `POST` | `/admin/cluster/rebalance/resume` | Resume automatic move progression |
 
 Membership bodies use `{"groupId":"data-0","endpoint":"10.0.0.14:3263"}`; leadership transfer needs only `groupId`. Perform topology changes for the catalog and every data group.
+
+The rebalance approval body is `{"planId":"..."}`. Only the catalog leader may plan, approve, or advance. A move is persisted as `copying`, `catchingUp`, `switching`, and `draining`; status includes routing epoch and snapshot/replay high-water marks. Plans expire with the controller process, but approved moves and their checkpoints survive restart.

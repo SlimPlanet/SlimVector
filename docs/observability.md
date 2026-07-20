@@ -12,13 +12,15 @@ Liveness must not be used to route writes. Readiness is the load-balancer signal
 
 Important series include:
 
-- collections and memory: `slimvector_open_collections`, `slimvector_managed_memory_bytes`;
-- search: request/failure/slow totals, mode totals, cumulative duration;
+- collections and memory: `slimvector_open_collections`, `slimvector_managed_memory_bytes`, cumulative managed allocations, GC collections/pause time, and per-generation heap bytes;
+- search: request/failure/slow totals, mode totals, cumulative duration, fan-out request count and physical partitions searched;
+- storage: logical bytes read/written and durable flush count (these are instrumented logical I/O, not OS-guaranteed physical media writes);
 - indexes: load/failure totals, duration/documents and per-kind loads, migration attempts/failures/duration and last sampled recall; each open collection also exposes active kind/state, document count, estimated resident bytes, and persisted snapshot bytes;
 - admission/batching: queue depth, request/completion/rejection totals, batches/items, per-shard target size, window, payload, and replication latency;
 - Raft: leader flag, term, committed/applied indexes, applied commands, member count and membership-change state; per-member info includes endpoint/transport/leader/remote labels plus match index and observable replication lag;
 - geo: pending/sent/failure/received/duplicate/divergence totals and lag seconds;
 - backup/restore: successful/failed totals and deduplicated blobs.
+- placement: paused state, in-flight move count, per-move state/epoch info, and snapshot/replay high-water marks.
 
 Alert on readiness loss, any divergence, sustained geo pending growth, repeated backup failures, no successful backup within the expected interval, write rejections, queue depth near a configured capacity, applied index lag, and managed-memory growth alongside open collections.
 

@@ -53,6 +53,8 @@ public sealed record CollectionDefinition
 
     public VectorIndexConfiguration VectorIndex { get; init; } = new();
 
+    public CollectionPlacement? Placement { get; init; }
+
     public bool MetadataIndexed { get; init; } = true;
 
     public DateTimeOffset CreatedAt { get; init; }

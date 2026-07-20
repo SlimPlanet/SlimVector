@@ -19,6 +19,18 @@ public interface IConsensusCoordinator : IAsyncDisposable
 
     string GetDataGroupId(Guid collectionId);
 
+    CollectionPlacement CreateInitialPlacement(
+        Guid collectionId,
+        int virtualShardCount = CollectionPlacement.DefaultVirtualShardCount) =>
+        CollectionPlacement.Create(collectionId, [GetDataGroupId(collectionId)], virtualShardCount);
+
+    ShardRoute GetShardRoute(CollectionDefinition collection, string documentId) =>
+        collection.Placement?.Resolve(collection.Id, documentId) ??
+        new ShardRoute(0, GetDataGroupId(collection.Id), 0);
+
+    IReadOnlyList<ShardRoute> GetReadRoutes(CollectionDefinition collection) =>
+        collection.Placement?.ReadRoutes() ?? [new ShardRoute(0, GetDataGroupId(collection.Id), 0)];
+
     ValueTask UpsertCollectionAsync(
         CollectionDefinition collection,
         CancellationToken cancellationToken = default);
@@ -40,4 +52,10 @@ public interface IConsensusCoordinator : IAsyncDisposable
         Guid? collectionId,
         ReadConsistency consistency,
         CancellationToken cancellationToken = default);
+
+    ValueTask ApplyReadBarriersAsync(
+        CollectionDefinition collection,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        ApplyReadBarrierAsync(collection.Id, consistency, cancellationToken);
 }

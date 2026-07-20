@@ -39,9 +39,9 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
             RaftCommandKind.CatalogDelete when command.CatalogDelete is not null =>
                 ApplyCatalogDeleteAsync(command.CatalogDelete, cancellationToken),
             RaftCommandKind.DataBatch when command.DataBatch is not null =>
-                ApplyDataBatchAsync(command.DataBatch, cancellationToken),
+                ApplyDataBatchAsync(command.DataBatch, command.GroupId, cancellationToken),
             RaftCommandKind.ShardBatch when command.ShardBatch is not null =>
-                ApplyShardBatchAsync(command.ShardBatch, cancellationToken),
+                ApplyShardBatchAsync(command.ShardBatch, command.GroupId, cancellationToken),
             _ => ValueTask.FromException(new InvalidDataException("The Raft command payload is inconsistent.")),
         };
     }
@@ -58,7 +58,7 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
             CollectionDefinition[] selected = string.Equals(groupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal)
                 ? allCollections.ToArray()
                 : allCollections
-                    .Where(collection => string.Equals(GetDataGroupId(collection.Id), groupId, StringComparison.Ordinal))
+                    .Where(collection => CollectionBelongsToGroup(collection, groupId))
                     .ToArray();
             List<RaftCollectionSnapshot> collections = new(selected.Length);
             foreach (CollectionDefinition collection in selected.OrderBy(static item => item.Id))
@@ -74,6 +74,10 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                             .LoadDocumentsAsync(collection.Id, cancellationToken)
                             .ConfigureAwait(false);
                         documents = current.Values
+                            .Where(document => string.Equals(
+                                GetShardRoute(collection, document.Id).DataGroupId,
+                                groupId,
+                                StringComparison.Ordinal))
                             .OrderBy(static document => document.Id, StringComparer.Ordinal)
                             .Select(RaftCommandCodec.FromDomain)
                             .ToArray();
@@ -133,7 +137,7 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
 
         foreach ((RaftCollectionSnapshot collectionSnapshot, CollectionDefinition definition) in state.Collections.Zip(definitions))
         {
-            if (!string.Equals(GetDataGroupId(definition.Id), groupId, StringComparison.Ordinal))
+            if (!CollectionBelongsToGroup(definition, groupId))
             {
                 throw new InvalidDataException($"Collection '{definition.Id}' does not belong to Raft group '{groupId}'.");
             }
@@ -152,7 +156,8 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                 HashSet<string> restoredIds = restored.Select(static document => document.Id).ToHashSet(StringComparer.Ordinal);
                 StorageOperation[] replacement = [
                     .. current.Keys
-                        .Where(id => !restoredIds.Contains(id))
+                        .Where(id => string.Equals(GetShardRoute(definition, id).DataGroupId, groupId, StringComparison.Ordinal) &&
+                            !restoredIds.Contains(id))
                         .Select(id => StorageOperation.Delete(id, current[id].Version + 1)),
                     .. restored.Select(StorageOperation.Upsert),
                 ];
@@ -186,6 +191,9 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         CancellationToken cancellationToken)
     {
         CollectionDefinition incoming = RaftCommandCodec.ToDomain(command.Collection);
+        incoming = incoming.Placement is null
+            ? incoming with { Placement = CollectionPlacement.Create(incoming.Id, [command.DataGroupId]) }
+            : incoming;
         await EnsureCollectionAsync(incoming, cancellationToken).ConfigureAwait(false);
         StateChanged?.Invoke(incoming.Id);
     }
@@ -212,12 +220,41 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         StateChanged?.Invoke(command.CollectionId);
     }
 
-    private async ValueTask ApplyDataBatchAsync(DataBatchCommand command, CancellationToken cancellationToken)
+    private async ValueTask ApplyDataBatchAsync(
+        DataBatchCommand command,
+        string groupId,
+        CancellationToken cancellationToken)
     {
         CollectionDefinition collection = RaftCommandCodec.ToDomain(command.Collection);
         if (collection.Id != command.CollectionId)
         {
             throw new InvalidDataException("The Raft data batch collection identifiers do not match.");
+        }
+
+        if (collection.Placement is not null && command.RoutingEpoch > 0)
+        {
+            if (command.RoutingEpoch != collection.Placement.Epoch)
+            {
+                throw new DomainException(
+                    ErrorCodes.RoutingEpochMismatch,
+                    $"Routing epoch {command.RoutingEpoch} does not match catalog epoch {collection.Placement.Epoch}.");
+            }
+
+            foreach (RaftStorageOperation operation in command.Operations)
+            {
+                ShardRoute route = collection.Placement.Resolve(collection.Id, operation.Id);
+                if (!string.Equals(route.DataGroupId, groupId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        $"Document '{operation.Id}' belongs to data group '{route.DataGroupId}', not '{groupId}'.");
+                }
+
+                if (command.ShardId >= 0 && route.ShardId != command.ShardId)
+                {
+                    throw new InvalidDataException(
+                        $"Document '{operation.Id}' belongs to virtual shard {route.ShardId}, not {command.ShardId}.");
+                }
+            }
         }
 
         await EnsureCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
@@ -271,7 +308,10 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         StateChanged?.Invoke(collection.Id);
     }
 
-    private async ValueTask ApplyShardBatchAsync(ShardBatchCommand command, CancellationToken cancellationToken)
+    private async ValueTask ApplyShardBatchAsync(
+        ShardBatchCommand command,
+        string groupId,
+        CancellationToken cancellationToken)
     {
         if (command.Batches.Length == 0)
         {
@@ -280,7 +320,7 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
 
         foreach (DataBatchCommand batch in command.Batches)
         {
-            await ApplyDataBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+            await ApplyDataBatchAsync(batch, groupId, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -352,4 +392,12 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
 
     private string GetDataGroupId(Guid collectionId) =>
         RaftGroupAssignment.GetDataGroupId(collectionId, _dataGroupIds);
+
+    private bool CollectionBelongsToGroup(CollectionDefinition collection, string groupId) =>
+        collection.Placement?.ReadRoutes().Any(route => string.Equals(route.DataGroupId, groupId, StringComparison.Ordinal)) ??
+        string.Equals(GetDataGroupId(collection.Id), groupId, StringComparison.Ordinal);
+
+    private ShardRoute GetShardRoute(CollectionDefinition collection, string documentId) =>
+        collection.Placement?.Resolve(collection.Id, documentId) ??
+        new ShardRoute(0, GetDataGroupId(collection.Id), 0);
 }

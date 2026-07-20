@@ -271,6 +271,69 @@ public sealed record ClusterMembershipResponse
     public required IReadOnlyList<GroupMembershipResponse> Groups { get; init; }
 }
 
+public sealed record RebalanceApprovalRequest
+{
+    public required Guid PlanId { get; init; }
+}
+
+public sealed record RebalanceActionResponse
+{
+    public required Guid OperationId { get; init; }
+
+    public required Guid CollectionId { get; init; }
+
+    public required string CollectionName { get; init; }
+
+    public required int ShardId { get; init; }
+
+    public required string SourceDataGroupId { get; init; }
+
+    public required string TargetDataGroupId { get; init; }
+
+    public required string Reason { get; init; }
+}
+
+public sealed record RebalancePlanResponse
+{
+    public required Guid PlanId { get; init; }
+
+    public required DateTimeOffset CreatedAt { get; init; }
+
+    public required bool DryRun { get; init; }
+
+    public required IReadOnlyList<RebalanceActionResponse> Actions { get; init; }
+}
+
+public sealed record ShardMoveResponse
+{
+    public required Guid OperationId { get; init; }
+
+    public required Guid CollectionId { get; init; }
+
+    public required string CollectionName { get; init; }
+
+    public required int ShardId { get; init; }
+
+    public required string SourceDataGroupId { get; init; }
+
+    public required string TargetDataGroupId { get; init; }
+
+    public required ShardPlacementState State { get; init; }
+
+    public required long RoutingEpoch { get; init; }
+
+    public required long SnapshotVersion { get; init; }
+
+    public required long ReplayedThroughVersion { get; init; }
+}
+
+public sealed record PlacementControllerResponse
+{
+    public required bool Paused { get; init; }
+
+    public required IReadOnlyList<ShardMoveResponse> Moves { get; init; }
+}
+
 public sealed record AdminOperationResponse
 {
     public required string Status { get; init; }
