@@ -76,6 +76,11 @@ public sealed class GeoReplicatingConsensusCoordinator : IConsensusCoordinator
             .ConfigureAwait(false);
     }
 
+    public ValueTask ReplaceTopologyAsync(
+        ClusterTopology topology,
+        CancellationToken cancellationToken = default) =>
+        _local.ReplaceTopologyAsync(topology, cancellationToken);
+
     public ValueTask AppendAsync(
         CollectionDefinition collection,
         IReadOnlyList<StorageOperation> operations,
@@ -97,6 +102,12 @@ public sealed class GeoReplicatingConsensusCoordinator : IConsensusCoordinator
         ReadConsistency consistency,
         CancellationToken cancellationToken = default) =>
         _local.ApplyReadBarrierAsync(collectionId, consistency, cancellationToken);
+
+    public ValueTask ApplyDataGroupReadBarrierAsync(
+        string dataGroupId,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        _local.ApplyDataGroupReadBarrierAsync(dataGroupId, consistency, cancellationToken);
 
     public ValueTask ApplyReadBarriersAsync(
         CollectionDefinition collection,

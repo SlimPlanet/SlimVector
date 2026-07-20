@@ -10,22 +10,24 @@ A write follows this path:
 2. Domain, batch-size, text-size, and admission checks run before durable mutation.
 3. The adaptive scheduler admits the request into bounded global, client, collection, and shard queues.
 4. A per-shard worker builds a fair batch by rotating between collections, then proposes one deterministic MemoryPack command.
-5. Single-node mode applies it directly. Cluster mode commits it through the collection's data Raft group.
+5. Single-node mode applies it to the local RF1 group. Cluster mode resolves every document through its immutable virtual shard and commits the partitioned command through the corresponding data Raft leader. An API node that does not host that group forwards the exact idempotent MemoryPack command over authenticated HTTP/2.
 6. The storage state machine writes an immutable checksummed segment and atomically replaces its manifest.
 7. The open collection runtime updates in-memory state and writes a versioned derived-index snapshot. A stale snapshot is safe because its document signature forces reconstruction.
 8. When geographic replication is enabled, a separate durable outbox forwards the semantic command to the secondary.
 
-A query first applies the selected read barrier, opens the collection on demand, evaluates the metadata candidate set, then runs Flat/HNSW and/or BM25. Hybrid search combines ranks with weighted reciprocal-rank fusion.
+A query fans out only to represented data groups. Linearizable requests use group leaders; stale requests may use healthy followers. Each group evaluates metadata and returns an oversampled local top-K, and the coordinator performs a stable score/id merge. Text and hybrid searches first collect BM25 corpus/term statistics from every group, aggregate them globally, then score locally with the same global statistics. Hybrid search combines global vector/text ranks with weighted reciprocal-rank fusion.
 
 ## Consensus topology
 
-Every cluster node hosts a catalog group plus `Raft:DataGroupCount` independent data groups. The catalog replicates collection definitions and deterministic placement. A collection id hashes to one data group, so different shards can commit concurrently. Each group has its own DotNext TCP endpoint, WAL, election, commit index, and snapshots. The API returns HTTP 307 with the mapped public API address when a follower receives a leader-only write.
+SlimVector is shared-nothing. A three-voter catalog records nodes, roles, capacities, zones, data groups, replica sets, collection shard maps, placement epochs and durable movement state; other nodes keep its persistent local cache. Each data group normally has its own RF3 replica set and runs only on those nodes. Groups have independent DotNext endpoints, WALs, leaders, commit indexes and snapshots, using ports allocated persistently from each node's configured range.
 
-`leader` reads execute a leader barrier, `linearizable` reads use a quorum-backed read barrier, and `stale` reads deliberately skip it. Readiness is false until all local groups are usable.
+Collections have 1,024 virtual shards by default. The shard count is persisted and immutable; only the epoch-versioned shard-to-group map changes. This decouples a collection from one server and allows fine-grained redistribution across dozens of nodes. Replica relocation temporarily adds a fourth voter while Raft installs/catches up its state. Shard relocation copies a checksummed snapshot under a barrier, replays ordered deltas through the target group, switches authority by catalog epoch, and deletes the source only afterward.
+
+`leader` reads execute a leader barrier, `linearizable` reads use a quorum-backed read barrier, and `stale` reads deliberately skip it. Readiness is based on the catalog cache and locally assigned groups, not every group in the cluster.
 
 ## Durable state
 
-The catalog, immutable segments, and manifests are authoritative. Tombstones preserve deletes until compaction. Catalog/manifests use atomic replacement; segment and derived-index files carry SHA-256 checksums. Startup replays valid segments by sequence and reconciles orphaned files left by a crash.
+The catalog, immutable segments, and manifests are authoritative. A node stores authoritative collection files only below `data-groups/{groupId}/collections/{collectionId}` for groups it hosts. Tombstones preserve deletes until compaction. Catalog/manifests use atomic replacement; segment and derived-index files carry SHA-256 checksums. Startup replays valid segments by sequence and reconciles orphaned files left by a crash.
 
 Flat vectors, HNSW graphs, BM25 term structures, and metadata structures are also stored in a combined `search-index-v1` derived snapshot. The snapshot includes the ordered id/version signature and index configuration. Any mismatch, malformed payload, or checksum failure prevents reuse; authoritative segments can reconstruct all four indexes.
 

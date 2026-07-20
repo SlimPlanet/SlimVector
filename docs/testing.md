@@ -35,6 +35,14 @@ dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --filter '*A
 
 The suite includes allocation diagnostics and parameterized cases for exact/HNSW/text/metadata/hybrid queries, Raft MemoryPack serialization at multiple batch sizes, concurrent adaptive-scheduler throughput, and filesystem cold load at multiple collection sizes. Benchmark results are machine-specific and are not committed as product guarantees.
 
+The deterministic capacity planner benchmark exercises RF3 at 3, 6 and 9 homogeneous nodes and fails if useful capacity is not linear or assigned-byte skew reaches 15%:
+
+```bash
+dotnet run --project benchmarks/SlimVector.Benchmarks -c Release -- --capacity-scale-out --node-capacity-gib 1024 --output artifacts/capacity
+```
+
+The Compose topology is validated in CI, but the real multi-container scale-out/failure drill requires a running Docker daemon. Start the three catalog voters, start joiner nodes, register them through `/admin/cluster/nodes/join`, approve the suggested plan, then verify topology and per-node `data-groups` directories before and after shard redistribution.
+
 Run reproducible measured end-to-end profiles with:
 
 ```bash

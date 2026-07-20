@@ -1,4 +1,4 @@
-using System.Collections.Frozen;
+using System.Collections.Concurrent;
 using SlimVector.Domain;
 using SlimVector.Raft.Commands;
 
@@ -7,8 +7,10 @@ namespace SlimVector.Raft;
 public sealed class MultiRaftNode : IAsyncDisposable
 {
     public const string CatalogGroupId = "catalog";
-    private readonly FrozenDictionary<string, RaftGroupNode> _groups;
-    private readonly string[] _dataGroupIds;
+    private readonly ConcurrentDictionary<string, RaftGroupNode> _groups = new(StringComparer.Ordinal);
+    private readonly Func<string, IRaftCommandApplier> _applierFactory;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private volatile bool _started;
 
     public MultiRaftNode(
         IEnumerable<RaftGroupNodeOptions> groupOptions,
@@ -27,36 +29,138 @@ public sealed class MultiRaftNode : IAsyncDisposable
             throw new ArgumentException("Raft group ids must be unique.", nameof(groupOptions));
         }
 
-        _groups = options.ToFrozenDictionary(
-            static option => option.GroupId,
-            option => new RaftGroupNode(option, applierFactory(option.GroupId)),
-            StringComparer.Ordinal);
-        _dataGroupIds = _groups.Keys
-            .Where(static groupId => groupId != CatalogGroupId)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-        if (_dataGroupIds.Length == 0)
+        _applierFactory = applierFactory;
+        foreach (RaftGroupNodeOptions option in options)
         {
-            throw new ArgumentException("A multi-Raft node requires at least one data group.", nameof(groupOptions));
+            if (!_groups.TryAdd(option.GroupId, new RaftGroupNode(option, applierFactory(option.GroupId))))
+            {
+                throw new ArgumentException($"Raft group id '{option.GroupId}' is duplicated.", nameof(groupOptions));
+            }
         }
+
     }
 
-    public IReadOnlyCollection<string> GroupIds => _groups.Keys;
+    public IReadOnlyCollection<string> GroupIds => _groups.Keys.ToArray();
 
-    public IReadOnlyList<string> DataGroupIds => _dataGroupIds;
+    public IReadOnlyList<string> DataGroupIds => _groups.Keys
+        .Where(static groupId => groupId != CatalogGroupId)
+        .Order(StringComparer.Ordinal)
+        .ToArray();
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
-        await Task.WhenAll(_groups.Values.Select(group => group.StartAsync(cancellationToken).AsTask())).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_started)
+            {
+                return;
+            }
+
+            await Task.WhenAll(_groups.Values.Select(group => group.StartAsync(cancellationToken).AsTask())).ConfigureAwait(false);
+            _started = true;
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
     }
 
     public async ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
-        await Task.WhenAll(_groups.Values.Select(group => group.StopAsync(cancellationToken).AsTask())).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_started)
+            {
+                return;
+            }
+
+            await Task.WhenAll(_groups.Values.Select(group => group.StopAsync(cancellationToken).AsTask())).ConfigureAwait(false);
+            _started = false;
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
+    }
+
+    public async ValueTask AddGroupAsync(
+        RaftGroupNodeOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.Equals(options.GroupId, CatalogGroupId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The catalog group cannot be added dynamically.", nameof(options));
+        }
+
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_groups.ContainsKey(options.GroupId))
+            {
+                return;
+            }
+
+            RaftGroupNode group = new(options, _applierFactory(options.GroupId));
+            if (!_groups.TryAdd(options.GroupId, group))
+            {
+                await group.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                if (_started)
+                {
+                    await group.StartAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                _groups.TryRemove(options.GroupId, out _);
+                await group.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
+    }
+
+    public async ValueTask RemoveGroupAsync(string groupId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        if (string.Equals(groupId, CatalogGroupId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The catalog group cannot be removed dynamically.", nameof(groupId));
+        }
+
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_groups.TryRemove(groupId, out RaftGroupNode? group))
+            {
+                return;
+            }
+
+            if (_started)
+            {
+                await group.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await group.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
     }
 
     public string GetDataGroupId(Guid collectionId)
-        => RaftGroupAssignment.GetDataGroupId(collectionId, _dataGroupIds);
+        => RaftGroupAssignment.GetDataGroupId(collectionId, DataGroupIds);
 
     public ValueTask ReplicateCatalogAsync(RaftCommandEnvelope command, CancellationToken cancellationToken = default) =>
         _groups[CatalogGroupId].ReplicateAsync(command, cancellationToken);
@@ -124,9 +228,20 @@ public sealed class MultiRaftNode : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (RaftGroupNode group in _groups.Values)
+        await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            await group.DisposeAsync().ConfigureAwait(false);
+            foreach (RaftGroupNode group in _groups.Values)
+            {
+                await group.DisposeAsync().ConfigureAwait(false);
+            }
+
+            _groups.Clear();
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+            _lifecycleGate.Dispose();
         }
     }
 }

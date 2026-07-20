@@ -9,6 +9,8 @@ public enum RaftCommandKind
     CatalogDelete = 2,
     DataBatch = 3,
     ShardBatch = 4,
+    TopologyReplace = 5,
+    ShardTransfer = 6,
 }
 
 [MemoryPackable]
@@ -29,6 +31,16 @@ public sealed partial class RaftCommandEnvelope
     public DataBatchCommand? DataBatch { get; set; }
 
     public ShardBatchCommand? ShardBatch { get; set; }
+
+    public TopologyReplaceCommand? TopologyReplace { get; set; }
+
+    public DataBatchCommand? ShardTransfer { get; set; }
+}
+
+[MemoryPackable]
+public sealed partial class TopologyReplaceCommand
+{
+    public RaftClusterTopology Topology { get; set; } = new();
 }
 
 [MemoryPackable]
@@ -229,6 +241,106 @@ public sealed partial class RaftApplicationSnapshot
     public string GroupId { get; set; } = string.Empty;
 
     public RaftCollectionSnapshot[] Collections { get; set; } = [];
+
+    public RaftClusterTopology? Topology { get; set; }
+}
+
+[MemoryPackable]
+public sealed partial class RaftClusterTopology
+{
+    public int FormatVersion { get; set; } = ClusterTopology.CurrentFormatVersion;
+
+    public long Epoch { get; set; } = 1;
+
+    public RaftClusterNode[] Nodes { get; set; } = [];
+
+    public RaftDataGroup[] DataGroups { get; set; } = [];
+
+    public RaftReplicaMove[] ReplicaMoves { get; set; } = [];
+
+    public string[] CatalogNodeIds { get; set; } = [];
+}
+
+[MemoryPackable]
+public sealed partial class RaftClusterNode
+{
+    public string NodeId { get; set; } = string.Empty;
+
+    public string ApiEndpoint { get; set; } = string.Empty;
+
+    public string InternalEndpoint { get; set; } = string.Empty;
+
+    public string RaftHost { get; set; } = string.Empty;
+
+    public string Zone { get; set; } = string.Empty;
+
+    public long CapacityBytes { get; set; }
+
+    public long UsedBytes { get; set; }
+
+    public long AssignedBytes { get; set; }
+
+    public int RaftPortStart { get; set; }
+
+    public int RaftPortCount { get; set; }
+
+    public ClusterNodeState State { get; set; }
+
+    public DateTimeOffset LastSeenAt { get; set; }
+
+    public string[] Roles { get; set; } = [];
+}
+
+[MemoryPackable]
+public sealed partial class RaftDataGroup
+{
+    public string GroupId { get; set; } = string.Empty;
+
+    public long Generation { get; set; }
+
+    public int ReplicationFactor { get; set; }
+
+    public long EstimatedBytes { get; set; }
+
+    public DataGroupState State { get; set; }
+
+    public RaftDataGroupReplica[] Replicas { get; set; } = [];
+}
+
+[MemoryPackable]
+public sealed partial class RaftDataGroupReplica
+{
+    public string NodeId { get; set; } = string.Empty;
+
+    public string RaftEndpoint { get; set; } = string.Empty;
+
+    public long? ObservedReplicationLag { get; set; }
+
+    public bool Healthy { get; set; } = true;
+}
+
+[MemoryPackable]
+public sealed partial class RaftReplicaMove
+{
+    public Guid OperationId { get; set; }
+
+    public Guid PlanId { get; set; }
+
+    public string GroupId { get; set; } = string.Empty;
+
+    public string SourceNodeId { get; set; } = string.Empty;
+
+    public string TargetNodeId { get; set; } = string.Empty;
+
+    public string TargetRaftEndpoint { get; set; } = string.Empty;
+
+    public long EstimatedBytes { get; set; }
+
+    public ReplicaMoveState State { get; set; }
+
+    public string? LastError { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
 }
 
 [MemoryPackable]

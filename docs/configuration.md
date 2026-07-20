@@ -14,8 +14,9 @@ Complete examples are [single-node appsettings](../src/SlimVector.Api/appsetting
 | `PQ` | subvectors, centroids, iterations, exact-rerank multiplier |
 | `DiskAnn` | artifact path, degree/search/beam, delta merge, page/cache sizes, retained generations |
 | `TextIndex`, `MetadataIndex` | BM25 limits/scoring and filter indexing/depth |
-| `Raft`, `ClusterMembership` | bootstrap or joining mode, group count, election/snapshot/transport, warm-up/lag/timeouts/minimum voters |
+| `Raft`, `ClusterMembership` | bootstrap/join mode, node identity/endpoints/zone/capacity, persistent data-port range, election/snapshot/transport and safe membership changes |
 | `Rebalancing` | controller enablement, manual approval, move concurrency, reconciliation/cooldown intervals and minimum improvement |
+| `DataPlacement` | RF, disk reserve, target/high watermark, 32-GiB group target, minimum group density and transfer budget |
 | `AdaptiveBatching`, `Backpressure` | bounded command/byte/window targets, global/client/collection/group queues and concurrency |
 | `RateLimit` | global/client/collection/read/write/admin token buckets, reserved read/write fractions, adaptive recovery |
 | `Backup`, `GeoReplication` | provider/schedule/retention/encryption/S3; separate signed DR outbox/receiver |
@@ -25,13 +26,15 @@ The HNSW/IVF/PQ/DiskANN sections populate a new collection's configuration when 
 
 ## Bootstrap versus join mode
 
-Initial cluster voters set `Raft:JoinExistingCluster=false` and provide at least three unique `Members` plus matching `MemberApiEndpoints`, including the local endpoint. A new server sets `JoinExistingCluster=true` with both arrays empty. It starts non-voting and is installed into each group only through the authenticated membership API and Raft consensus.
+Initial cluster voters set `Raft:JoinExistingCluster=false` and provide three catalog `Members` plus matching `MemberApiEndpoints`, `MemberNodeIds`, `MemberInternalEndpoints`, `MemberZones` and `MemberCapacityBytes`. These bootstrap arrays must be identical and ordered identically on the three voters. Every server also supplies its own stable `NodeId`, public/internal API endpoints, zone, usable disk capacity and persistent data-port range. A new server registers through `/admin/cluster/nodes/join`; the catalog records it, seeds its signed persistent catalog cache, computes a read-only capacity-aware plan, and waits for explicit approval before installing data-group replicas. Joined data nodes do not become catalog voters.
 
 Critical startup failures include invalid/duplicate topology, missing local or API mappings, exhausted port offsets, bad election/heartbeat ratios, empty Auto allowed sets, non-divisible fixed IVF-PQ dimensions, invalid DiskANN page/cache/retention bounds, inconsistent queue/token reserves, unsafe timeouts, weak administrator/geo secrets, invalid backup encryption keys, and incomplete S3 credentials.
 
 ## Placement controller
 
-`Rebalancing:ManualApproval` defaults to `true`: planning is read-only and a catalog leader starts no move until an administrator approves the returned plan. `MaximumConcurrentMoves` bounds simultaneous source/target pairs. With manual approval disabled, the hosted controller plans and advances moves every `ReconcileInterval`; setting `Enabled=false` disables background progression while keeping explicit administrator actions available.
+`Rebalancing:ManualApproval` defaults to `true`: planning is read-only and a catalog leader starts no move until an administrator approves the returned plan. `MaximumConcurrentMoves` bounds simultaneous source/target pairs. Replica relocation first installs and catches up a temporary fourth member, transfers leadership if needed, then removes the old member. The staged catalog record survives coordinator changes and restart. Shard moves separately persist `Copying`, `CatchingUp`, `Switching` and `Draining` checkpoints. Setting `Enabled=false` disables background progression while keeping explicit administrator actions available.
+
+`DataPlacement:ReplicationFactor=3` stores each data group on three distinct nodes and prefers distinct zones. Capacity is balanced by actual bytes and free space, not shard count. With homogeneous nodes, advertised usable capacity is `(sum(capacity) × (1 - ReserveRatio)) / ReplicationFactor`; the 65% target leaves maneuvering room before the 80% high watermark. `DataPlacement:MaximumTransferBytesPerSecond` is the operator transfer budget; Raft snapshot transport remains responsible for flow control. `FailureReplacementDelay` controls how long a node may stop reporting before the catalog leader marks it unavailable and automatically approves RF-repair moves; it does not bypass quorum requirements.
 
 ## Rate and congestion policy
 

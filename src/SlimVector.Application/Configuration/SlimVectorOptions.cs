@@ -24,6 +24,8 @@ public sealed class SlimVectorOptions
 
     public RebalancingOptions Rebalancing { get; set; } = new();
 
+    public DataPlacementOptions DataPlacement { get; set; } = new();
+
     public AdaptiveBatchingOptions AdaptiveBatching { get; set; } = new();
 
     public RateLimitOptions RateLimit { get; set; } = new();
@@ -190,13 +192,31 @@ public sealed class RaftOptions
 
     public string PublicApiEndpoint { get; set; } = "http://127.0.0.1:8080";
 
+    public string InternalEndpoint { get; set; } = "http://127.0.0.1:8080";
+
+    public string Zone { get; set; } = "default";
+
     public string[] Members { get; set; } = [];
 
     public string[] MemberApiEndpoints { get; set; } = [];
 
+    public string[] MemberNodeIds { get; set; } = [];
+
+    public string[] MemberInternalEndpoints { get; set; } = [];
+
+    public string[] MemberZones { get; set; } = [];
+
+    public long[] MemberCapacityBytes { get; set; } = [];
+
     public bool JoinExistingCluster { get; set; }
 
     public int DataGroupCount { get; set; } = 2;
+
+    public int DataPortRangeStart { get; set; } = 3_263;
+
+    public int DataPortRangeCount { get; set; } = 128;
+
+    public long CapacityBytes { get; set; }
 
     public TimeSpan ElectionTimeout { get; set; } = TimeSpan.FromSeconds(2);
 
@@ -241,6 +261,27 @@ public sealed class RebalancingOptions
     public TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(5);
 
     public double MinimumImprovementRatio { get; set; } = 0.10;
+}
+
+public sealed class DataPlacementOptions
+{
+    public const string SectionName = "DataPlacement";
+
+    public int ReplicationFactor { get; set; } = 3;
+
+    public double ReserveRatio { get; set; } = 0.15;
+
+    public double TargetUtilizationRatio { get; set; } = 0.65;
+
+    public double HighWatermarkRatio { get; set; } = 0.80;
+
+    public long TargetDataGroupBytes { get; set; } = 32L * 1_024 * 1_024 * 1_024;
+
+    public int MinimumGroupReplicasPerNode { get; set; } = 4;
+
+    public long MaximumTransferBytesPerSecond { get; set; } = 64L * 1_024 * 1_024;
+
+    public TimeSpan FailureReplacementDelay { get; set; } = TimeSpan.FromMinutes(5);
 }
 
 public sealed class GeoReplicationOptions
@@ -380,6 +421,8 @@ public sealed class ApiOptions
     public string RoutePrefix { get; set; } = "/api/v1";
 
     public int MaximumBatchSize { get; set; } = 1_000;
+
+    public int MaximumDocumentOffset { get; set; } = 10_000;
 
     public long MaximumRequestBodyBytes { get; set; } = 16 * 1024 * 1024;
 

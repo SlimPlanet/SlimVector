@@ -168,6 +168,43 @@ public sealed class RaftClusterTests
         Assert.All(groupIds, groupId => Assert.True(node.GetGroup(groupId).IsLeader));
     }
 
+    [Fact(Timeout = 45_000)]
+    public async Task MultiRaftStartsAndRemovesADataGroupWhileRunning()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        IPEndPoint[] endpoints = AllocateLoopbackEndpoints(3);
+        Dictionary<string, RecordingCommandApplier> appliers = new(StringComparer.Ordinal)
+        {
+            [MultiRaftNode.CatalogGroupId] = new RecordingCommandApplier(),
+            ["data-0"] = new RecordingCommandApplier(),
+            ["data-hot"] = new RecordingCommandApplier(),
+        };
+        await using MultiRaftNode node = new(
+            [
+                Options(MultiRaftNode.CatalogGroupId, endpoints[0], [endpoints[0]], directory.Path, 0),
+                Options("data-0", endpoints[1], [endpoints[1]], directory.Path, 1),
+            ],
+            groupId => appliers[groupId]);
+        await node.StartAsync(cancellationToken);
+
+        await node.AddGroupAsync(
+            Options("data-hot", endpoints[2], [endpoints[2]], directory.Path, 2),
+            cancellationToken);
+        await node.GetGroup("data-hot").WaitForLeaderAsync(ElectionTimeout, cancellationToken);
+        CollectionDefinition collection = CollectionDefinition.Create("hot", 2, DistanceMetric.Cosine);
+        await node.ReplicateDataGroupAsync(
+            "data-hot",
+            RaftCommandCodec.DataBatch(Guid.NewGuid(), "data-hot", collection, []),
+            cancellationToken);
+
+        Assert.Single(appliers["data-hot"].Commands);
+        await node.RemoveGroupAsync("data-hot", cancellationToken);
+        Assert.DoesNotContain("data-hot", node.GroupIds);
+        Assert.Throws<KeyNotFoundException>(() => node.GetGroup("data-hot"));
+        Assert.True(node.GetGroup(MultiRaftNode.CatalogGroupId).IsLeader);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task LateFollowerCatchesUpFromPersistentApplicationSnapshot()
     {

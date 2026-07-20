@@ -106,6 +106,8 @@ public sealed record DocumentResponse
 public sealed record DocumentListResponse
 {
     public required IReadOnlyList<DocumentResponse> Documents { get; init; }
+
+    public string? ContinuationToken { get; init; }
 }
 
 public sealed record CountResponse
@@ -271,9 +273,184 @@ public sealed record ClusterMembershipResponse
     public required IReadOnlyList<GroupMembershipResponse> Groups { get; init; }
 }
 
+public sealed record ClusterNodeJoinRequest
+{
+    public required string NodeId { get; init; }
+
+    public required string ApiEndpoint { get; init; }
+
+    public required string InternalEndpoint { get; init; }
+
+    public required string RaftHost { get; init; }
+
+    public required string Zone { get; init; }
+
+    public required long CapacityBytes { get; init; }
+
+    public required int RaftPortStart { get; init; }
+
+    public required int RaftPortCount { get; init; }
+
+    public string[]? Roles { get; init; }
+}
+
+public sealed record ClusterNodeResponse
+{
+    public required string NodeId { get; init; }
+
+    public required string ApiEndpoint { get; init; }
+
+    public required string InternalEndpoint { get; init; }
+
+    public required string RaftHost { get; init; }
+
+    public required string Zone { get; init; }
+
+    public required long CapacityBytes { get; init; }
+
+    public required long UsedBytes { get; init; }
+
+    public required long AssignedBytes { get; init; }
+
+    public required int RaftPortStart { get; init; }
+
+    public required int RaftPortCount { get; init; }
+
+    public required ClusterNodeState State { get; init; }
+
+    public required DateTimeOffset LastSeenAt { get; init; }
+
+    public required IReadOnlyList<string> Roles { get; init; }
+}
+
+public sealed record DataGroupReplicaResponse
+{
+    public required string NodeId { get; init; }
+
+    public required string RaftEndpoint { get; init; }
+
+    public long? ObservedReplicationLag { get; init; }
+
+    public required bool Healthy { get; init; }
+}
+
+public sealed record DataGroupTopologyResponse
+{
+    public required string GroupId { get; init; }
+
+    public required long Generation { get; init; }
+
+    public required int ReplicationFactor { get; init; }
+
+    public required long EstimatedBytes { get; init; }
+
+    public required DataGroupState State { get; init; }
+
+    public required IReadOnlyList<DataGroupReplicaResponse> Replicas { get; init; }
+}
+
+public sealed record ClusterCapacityResponse
+{
+    public required long RawBytes { get; init; }
+
+    public required long ReservedBytes { get; init; }
+
+    public required long EstimatedUsableBytes { get; init; }
+
+    public required int ReplicationFactor { get; init; }
+}
+
+public sealed record ClusterTopologyResponse
+{
+    public required int FormatVersion { get; init; }
+
+    public required long Epoch { get; init; }
+
+    public required IReadOnlyList<string> CatalogNodeIds { get; init; }
+
+    public required IReadOnlyList<ClusterNodeResponse> Nodes { get; init; }
+
+    public required IReadOnlyList<DataGroupTopologyResponse> DataGroups { get; init; }
+
+    public required IReadOnlyList<ReplicaMoveStatusResponse> ReplicaMoves { get; init; }
+
+    public required ClusterCapacityResponse Capacity { get; init; }
+
+    public SharedNothingRebalancePlanResponse? SuggestedRebalancePlan { get; init; }
+}
+
+public sealed record ReplicaMoveStatusResponse
+{
+    public required Guid OperationId { get; init; }
+
+    public required Guid PlanId { get; init; }
+
+    public required string GroupId { get; init; }
+
+    public required string SourceNodeId { get; init; }
+
+    public required string TargetNodeId { get; init; }
+
+    public required long EstimatedBytes { get; init; }
+
+    public required ReplicaMoveState State { get; init; }
+
+    public string? LastError { get; init; }
+
+    public required DateTimeOffset UpdatedAt { get; init; }
+}
+
+public sealed record ReplicaRelocationResponse
+{
+    public required string GroupId { get; init; }
+
+    public required string SourceNodeId { get; init; }
+
+    public required string TargetNodeId { get; init; }
+
+    public required string TargetRaftEndpoint { get; init; }
+
+    public required long EstimatedBytes { get; init; }
+
+    public required string Reason { get; init; }
+}
+
+public sealed record NodeCapacityChangeResponse
+{
+    public required string NodeId { get; init; }
+
+    public required long AssignedBytesBefore { get; init; }
+
+    public required long AssignedBytesAfter { get; init; }
+}
+
+public sealed record SharedNothingRebalancePlanResponse
+{
+    public required Guid PlanId { get; init; }
+
+    public required long TopologyEpoch { get; init; }
+
+    public required DateTimeOffset CreatedAt { get; init; }
+
+    public string? DrainNodeId { get; init; }
+
+    public required IReadOnlyList<DataGroupTopologyResponse> GroupsToCreate { get; init; }
+
+    public required IReadOnlyList<ReplicaRelocationResponse> ReplicaMoves { get; init; }
+
+    public required IReadOnlyList<NodeCapacityChangeResponse> CapacityChanges { get; init; }
+}
+
 public sealed record RebalanceApprovalRequest
 {
     public required Guid PlanId { get; init; }
+}
+
+public sealed record PrepareDataGroupReplicaRequest
+{
+    public required string GroupId { get; init; }
+
+    public required string RaftEndpoint { get; init; }
 }
 
 public sealed record RebalanceActionResponse

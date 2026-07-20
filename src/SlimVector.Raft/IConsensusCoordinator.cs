@@ -39,6 +39,11 @@ public interface IConsensusCoordinator : IAsyncDisposable
         CollectionDefinition collection,
         CancellationToken cancellationToken = default);
 
+    ValueTask ReplaceTopologyAsync(
+        ClusterTopology topology,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromException(new NotSupportedException("Cluster topology updates are not supported by this coordinator."));
+
     ValueTask AppendAsync(
         CollectionDefinition collection,
         IReadOnlyList<StorageOperation> operations,
@@ -52,6 +57,12 @@ public interface IConsensusCoordinator : IAsyncDisposable
         Guid? collectionId,
         ReadConsistency consistency,
         CancellationToken cancellationToken = default);
+
+    ValueTask ApplyDataGroupReadBarrierAsync(
+        string dataGroupId,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        ApplyReadBarrierAsync(collectionId: null, consistency, cancellationToken);
 
     ValueTask ApplyReadBarriersAsync(
         CollectionDefinition collection,

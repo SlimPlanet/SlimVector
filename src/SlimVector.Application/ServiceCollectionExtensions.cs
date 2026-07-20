@@ -7,6 +7,7 @@ using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Placement;
+using SlimVector.Application.Routing;
 using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
@@ -48,6 +49,8 @@ public static class ServiceCollectionExtensions
         services.AddOptions<ClusterMembershipOptions>().Bind(configuration.GetSection(ClusterMembershipOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<RebalancingOptions>, RebalancingOptionsValidator>();
         services.AddOptions<RebalancingOptions>().Bind(configuration.GetSection(RebalancingOptions.SectionName)).ValidateOnStart();
+        services.AddSingleton<IValidateOptions<DataPlacementOptions>, DataPlacementOptionsValidator>();
+        services.AddOptions<DataPlacementOptions>().Bind(configuration.GetSection(DataPlacementOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<GeoReplicationOptions>, GeoReplicationOptionsValidator>();
         services.AddOptions<GeoReplicationOptions>().Bind(configuration.GetSection(GeoReplicationOptions.SectionName)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<AdaptiveBatchingOptions>, AdaptiveBatchingOptionsValidator>();
@@ -79,22 +82,95 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<TimeProvider>(),
                 provider.GetRequiredService<StorageMetrics>());
         });
+        services.AddSingleton<IDataGroupStorage>(provider =>
+        {
+            StorageOptions options = provider.GetRequiredService<IOptions<StorageOptions>>().Value;
+            return new FileSystemDataGroupStorage(
+                new StorageSettings
+                {
+                    Path = options.Path,
+                    FlushToDisk = options.FlushToDisk,
+                    MaximumSegmentsBeforeCompaction = options.MaximumSegmentsBeforeCompaction,
+                },
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetRequiredService<StorageMetrics>());
+        });
+        services.AddSingleton<IClusterTopologyStore>(provider =>
+        {
+            StorageOptions options = provider.GetRequiredService<IOptions<StorageOptions>>().Value;
+            return new FileSystemClusterTopologyStore(
+                new StorageSettings
+                {
+                    Path = options.Path,
+                    FlushToDisk = options.FlushToDisk,
+                    MaximumSegmentsBeforeCompaction = options.MaximumSegmentsBeforeCompaction,
+                },
+                provider.GetRequiredService<StorageMetrics>());
+        });
         services.AddSingleton(provider =>
         {
             RaftOptions raftOptions = provider.GetRequiredService<IOptions<RaftOptions>>().Value;
             string[] dataGroupIds = Enumerable.Range(0, raftOptions.DataGroupCount)
                 .Select(static index => $"data-{index}")
                 .ToArray();
-            return new StorageRaftCommandApplier(provider.GetRequiredService<IStorageEngine>(), dataGroupIds);
+            return new StorageRaftCommandApplier(
+                provider.GetRequiredService<IStorageEngine>(),
+                dataGroupIds,
+                provider.GetRequiredService<IDataGroupStorage>(),
+                provider.GetRequiredService<IClusterTopologyStore>());
         });
         services.AddSingleton(provider => new ConsensusCoordinatorHolder(CreateConsensusCoordinator(
             provider.GetRequiredService<IOptions<RaftOptions>>().Value,
             provider.GetRequiredService<IOptions<ClusterMembershipOptions>>().Value,
+            provider.GetRequiredService<IOptions<DataPlacementOptions>>().Value,
             provider.GetRequiredService<IOptions<StorageOptions>>().Value,
             provider.GetRequiredService<StorageRaftCommandApplier>())));
         services.AddSingleton<IClusterMembershipCoordinator>(provider =>
             provider.GetRequiredService<ConsensusCoordinatorHolder>().Local as IClusterMembershipCoordinator ??
             new SingleNodeMembershipCoordinator());
+        services.AddSingleton<ILocalRaftGroupManager>(provider =>
+            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local as ILocalRaftGroupManager ??
+            new SingleNodeLocalRaftGroupManager());
+        services.AddSingleton<ILocalRaftCommandReplicator>(provider =>
+            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local as ILocalRaftCommandReplicator ??
+            throw new InvalidOperationException("The local consensus coordinator cannot replicate internal Raft commands."));
+        services.AddSingleton<DataNodeRpcMetrics>();
+        services.AddHttpClient("SlimVector.DataNodeRpc");
+        services.AddSingleton<IDataNodeRpcClient>(provider => new DataNodeRpcClient(
+            provider.GetRequiredService<IHttpClientFactory>().CreateClient("SlimVector.DataNodeRpc"),
+            provider.GetRequiredService<IClusterTopologyStore>(),
+            provider.GetRequiredService<IOptions<RaftOptions>>(),
+            provider.GetRequiredService<IOptions<ApiOptions>>(),
+            provider.GetRequiredService<DataNodeRpcMetrics>()));
+        services.AddSingleton<IDataNodeRpcReceiver, DataNodeRpcReceiver>();
+        services.AddSingleton<IDataNodeQueryClient>(provider => new DataNodeQueryClient(
+            provider.GetRequiredService<IHttpClientFactory>().CreateClient("SlimVector.DataNodeRpc"),
+            provider.GetRequiredService<IClusterTopologyStore>(),
+            provider.GetRequiredService<IOptions<RaftOptions>>(),
+            provider.GetRequiredService<IOptions<ApiOptions>>(),
+            provider.GetRequiredService<DataNodeRpcMetrics>()));
+        services.AddSingleton<ILocalCatalogSnapshotExchange>(provider => new LocalCatalogSnapshotExchange(
+            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local,
+            provider.GetRequiredService<StorageRaftCommandApplier>(),
+            provider.GetRequiredService<IOptions<ApiOptions>>()));
+        services.AddHttpClient("SlimVector.CatalogCache");
+        services.AddSingleton<CatalogCacheSynchronizer>(provider => new CatalogCacheSynchronizer(
+            provider.GetRequiredService<IHttpClientFactory>().CreateClient("SlimVector.CatalogCache"),
+            provider.GetRequiredService<IClusterTopologyStore>(),
+            provider.GetRequiredService<ILocalCatalogSnapshotExchange>(),
+            provider.GetRequiredService<IOptions<RaftOptions>>(),
+            provider.GetRequiredService<IOptions<RebalancingOptions>>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<CatalogCacheSynchronizer>>()));
+        services.AddSingleton<ICatalogCacheSynchronizer>(provider =>
+            provider.GetRequiredService<CatalogCacheSynchronizer>());
+        services.AddSingleton(provider => new SharedNothingConsensusCoordinator(
+            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local,
+            provider.GetRequiredService<ILocalRaftGroupManager>(),
+            provider.GetRequiredService<IClusterTopologyStore>(),
+            provider.GetRequiredService<IDataNodeRpcClient>(),
+            provider.GetRequiredService<ILocalRaftCommandReplicator>(),
+            provider.GetRequiredService<ICatalogCacheSynchronizer>(),
+            provider.GetRequiredService<IOptions<RaftOptions>>()));
         services.AddHttpClient("SlimVector.GeoReplication");
         services.AddSingleton<IGeoReplicationService>(provider => new GeoReplicationService(
             CreateGeoReplicationSettings(provider.GetRequiredService<IOptions<GeoReplicationOptions>>().Value),
@@ -104,15 +180,36 @@ public static class ServiceCollectionExtensions
             CreateGeoReplicationSettings(provider.GetRequiredService<IOptions<GeoReplicationOptions>>().Value),
             provider.GetRequiredService<ConsensusCoordinatorHolder>().Local));
         services.AddSingleton<IConsensusCoordinator>(provider => new GeoReplicatingConsensusCoordinator(
-            provider.GetRequiredService<ConsensusCoordinatorHolder>().Local,
+            provider.GetRequiredService<SharedNothingConsensusCoordinator>(),
             provider.GetRequiredService<IGeoReplicationService>()));
         services.AddSingleton<IWriteScheduler, AdaptiveWriteScheduler>();
         services.AddSingleton<IPlacementController, PlacementController>();
+        services.AddSingleton<IClusterTopologyService, ClusterTopologyService>();
+        services.AddSingleton<ISharedNothingPlacementPlanner, SharedNothingPlacementPlanner>();
+        services.AddHttpClient("SlimVector.ClusterAdministration");
+        services.AddSingleton<SharedNothingRebalanceCoordinator>();
+        services.AddSingleton<ISharedNothingRebalanceCoordinator>(provider =>
+            provider.GetRequiredService<SharedNothingRebalanceCoordinator>());
         services.AddSingleton<IAdmissionController, AdaptiveAdmissionController>();
         services.AddHttpClient("SlimVector.Backup.S3");
         services.AddSingleton<IBackupService, BackupService>();
-        services.AddSingleton<ISlimVectorDatabase, SlimVectorDatabase>();
+        services.AddSingleton<SlimVectorDatabase>();
+        services.AddSingleton<ISlimVectorDatabase>(provider => provider.GetRequiredService<SlimVectorDatabase>());
+        services.AddSingleton<ILocalDataQueryService>(provider => provider.GetRequiredService<SlimVectorDatabase>());
+        services.AddSingleton<IDataNodeQueryReceiver, DataNodeQueryReceiver>();
+        services.AddSingleton<LocalDataGroupReconciler>();
+        services.AddSingleton<ILocalDataGroupProvisioner>(provider =>
+            provider.GetRequiredService<LocalDataGroupReconciler>());
         services.AddHostedService<SlimVectorHostedService>();
+        services.AddHostedService<ClusterTopologyBootstrapService>();
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(provider =>
+            provider.GetRequiredService<CatalogCacheSynchronizer>());
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(provider =>
+            provider.GetRequiredService<LocalDataGroupReconciler>());
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(provider =>
+            provider.GetRequiredService<SharedNothingRebalanceCoordinator>());
+        services.AddHostedService<NodeCapacityReporter>();
+        services.AddHostedService<ClusterFailureDetector>();
         services.AddHostedService<BackupHostedService>();
         services.AddHostedService<PlacementControllerHostedService>();
         return services;
@@ -121,6 +218,7 @@ public static class ServiceCollectionExtensions
     private static IConsensusCoordinator CreateConsensusCoordinator(
         RaftOptions options,
         ClusterMembershipOptions membershipOptions,
+        DataPlacementOptions placementOptions,
         StorageOptions storageOptions,
         StorageRaftCommandApplier applier)
     {
@@ -150,17 +248,42 @@ public static class ServiceCollectionExtensions
             return endpoint!;
         }).ToArray();
         string raftStoragePath = Path.Combine(Path.GetFullPath(storageOptions.Path), "raft", options.NodeId);
-        string[] groupIds = [
-            MultiRaftNode.CatalogGroupId,
-            .. Enumerable.Range(0, options.DataGroupCount).Select(static index => $"data-{index}"),
+        List<(string GroupId, int PortOffset, IPEndPoint[] Members)> groups =
+        [
+            (MultiRaftNode.CatalogGroupId, 0, memberBaseEndpoints.Take(3).ToArray()),
         ];
+        if (options.JoinExistingCluster)
+        {
+            groups.AddRange(Enumerable.Range(0, options.DataGroupCount)
+                .Select(index => ($"data-{index}", index + 1, Array.Empty<IPEndPoint>())));
+        }
+        else
+        {
+            int localMemberIndex = Array.FindIndex(memberBaseEndpoints, endpoint => endpoint.Equals(localBaseEndpoint));
+            int replicationFactor = Math.Min(placementOptions.ReplicationFactor, memberBaseEndpoints.Length);
+            for (int groupIndex = 0; groupIndex < options.DataGroupCount; groupIndex++)
+            {
+                int[] replicaIndexes = Enumerable.Range(0, replicationFactor)
+                    .Select(offset => ((groupIndex * replicationFactor) + offset) % memberBaseEndpoints.Length)
+                    .Distinct()
+                    .ToArray();
+                if (replicaIndexes.Contains(localMemberIndex))
+                {
+                    groups.Add((
+                        $"data-{groupIndex}",
+                        groupIndex + 1,
+                        replicaIndexes.Select(index => memberBaseEndpoints[index]).ToArray()));
+                }
+            }
+        }
+
         int upperElectionTimeout = checked((int)Math.Ceiling(options.ElectionTimeout.TotalMilliseconds));
         int lowerElectionTimeout = Math.Max(50, upperElectionTimeout / 2);
-        RaftGroupNodeOptions[] groupOptions = groupIds.Select((groupId, groupIndex) => new RaftGroupNodeOptions
+        RaftGroupNodeOptions[] groupOptions = groups.Select(group => new RaftGroupNodeOptions
         {
-            GroupId = groupId,
-            LocalEndpoint = OffsetPort(localBaseEndpoint!, groupIndex),
-            Members = memberBaseEndpoints.Select(endpoint => OffsetPort(endpoint, groupIndex)).ToArray(),
+            GroupId = group.GroupId,
+            LocalEndpoint = OffsetPort(localBaseEndpoint!, group.PortOffset),
+            Members = group.Members.Select(endpoint => OffsetPort(endpoint, group.PortOffset)).ToArray(),
             StoragePath = raftStoragePath,
             LowerElectionTimeoutMilliseconds = lowerElectionTimeout,
             UpperElectionTimeoutMilliseconds = upperElectionTimeout,

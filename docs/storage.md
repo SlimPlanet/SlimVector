@@ -6,8 +6,9 @@ The filesystem engine is authoritative in both execution modes. Each collection 
 
 ```text
 data/
-  catalog.json
-  collections/<collection-id>/
+  storage-format-v2.json
+  cluster-topology-v2.json
+  data-groups/<group-id>/collections/<collection-id>/
     manifest.json
     segments/<sequence>-<id>.segment
     derived/search-index-v1.bin
@@ -17,7 +18,7 @@ data/
   geo-replication/...
 ```
 
-The catalog and collection manifests are versioned JSON written through a temporary file, flush, and atomic rename. Segment bodies are versioned payloads with a SHA-256 header. Deletes are stored as tombstone operations, so replay cannot resurrect an older value.
+The topology catalog and collection manifests are versioned JSON written through a temporary file, flush, and atomic rename. Each node creates only the `data-groups` directories whose replica sets include that node; it never materializes the complete collection unless it owns every group (the normal single-node RF1 case). Segment bodies are versioned payloads with a SHA-256 header. Deletes are stored as tombstone operations, so replay cannot resurrect an older value.
 
 ## Commit and recovery
 
@@ -40,3 +41,7 @@ Derived data is never authoritative. A checksum failure is reported as storage c
 ## Filesystem assumptions
 
 Use a local durable filesystem that provides atomic rename within one volume. Do not put the live data directory on eventually consistent object storage. In cluster mode each node needs a distinct volume; never share one storage path between Raft nodes.
+
+## Storage v1 to v2
+
+The distributed layout is intentionally not rolling-compatible with v1. Keep the old cluster read-only, create and verify a v1 backup, restore it into a fresh v2 cluster, then compare collection counts and logical checksums before moving client traffic. Restore recomputes the immutable 1,024-shard placement and rebuilds all derived indexes. Rollback points clients back to the preserved v1 cluster; do not reuse its volumes in v2.

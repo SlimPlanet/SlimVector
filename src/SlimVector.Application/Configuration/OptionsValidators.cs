@@ -209,6 +209,17 @@ public sealed class RaftOptionsValidator : IValidateOptions<RaftOptions>
             failures.Add("Raft:PublicApiEndpoint must be an absolute HTTP(S) URI.");
         }
 
+        if (!Uri.TryCreate(options.InternalEndpoint, UriKind.Absolute, out Uri? internalEndpoint) ||
+            internalEndpoint.Scheme is not "http" and not "https")
+        {
+            failures.Add("Raft:InternalEndpoint must be an absolute HTTP(S) URI.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.Zone))
+        {
+            failures.Add("Raft:Zone is required.");
+        }
+
         if (options.Mode == ExecutionMode.Cluster && options.JoinExistingCluster && options.Members.Length != 0)
         {
             failures.Add("Raft:Members must be empty when Raft:JoinExistingCluster is true; membership is installed through Raft consensus.");
@@ -252,9 +263,39 @@ public sealed class RaftOptionsValidator : IValidateOptions<RaftOptions>
             else if (localApiEndpoint is not null && !options.MemberApiEndpoints.Contains(
                          localApiEndpoint.AbsoluteUri.TrimEnd('/'),
                          StringComparer.OrdinalIgnoreCase) &&
-                     !options.MemberApiEndpoints.Contains(options.PublicApiEndpoint, StringComparer.OrdinalIgnoreCase))
+                     !options.MemberApiEndpoints.Contains(options.PublicApiEndpoint, StringComparer.OrdinalIgnoreCase) &&
+                     !options.MemberApiEndpoints.Contains(options.InternalEndpoint.TrimEnd('/'), StringComparer.OrdinalIgnoreCase))
             {
-                failures.Add("Raft:MemberApiEndpoints must contain Raft:PublicApiEndpoint in cluster mode.");
+                failures.Add("Raft:MemberApiEndpoints must contain this node's public or internal API endpoint in cluster mode.");
+            }
+
+            if (options.MemberNodeIds.Length > 0 &&
+                (options.MemberNodeIds.Length != options.Members.Length ||
+                 options.MemberNodeIds.Any(string.IsNullOrWhiteSpace) ||
+                 options.MemberNodeIds.Distinct(StringComparer.Ordinal).Count() != options.MemberNodeIds.Length ||
+                 !options.MemberNodeIds.Contains(options.NodeId, StringComparer.Ordinal)))
+            {
+                failures.Add("Raft:MemberNodeIds must contain one unique id per bootstrap member, including Raft:NodeId.");
+            }
+
+            if (options.MemberInternalEndpoints.Length > 0 &&
+                (options.MemberInternalEndpoints.Length != options.Members.Length ||
+                 options.MemberInternalEndpoints.Any(endpoint =>
+                     !Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri) || uri.Scheme is not "http" and not "https")))
+            {
+                failures.Add("Raft:MemberInternalEndpoints must contain one absolute HTTP(S) URI per bootstrap member.");
+            }
+
+            if (options.MemberZones.Length > 0 &&
+                (options.MemberZones.Length != options.Members.Length || options.MemberZones.Any(string.IsNullOrWhiteSpace)))
+            {
+                failures.Add("Raft:MemberZones must contain one non-empty zone per bootstrap member.");
+            }
+
+            if (options.MemberCapacityBytes.Length > 0 &&
+                (options.MemberCapacityBytes.Length != options.Members.Length || options.MemberCapacityBytes.Any(static bytes => bytes < 1)))
+            {
+                failures.Add("Raft:MemberCapacityBytes must contain one positive capacity per bootstrap member.");
             }
         }
 
@@ -266,6 +307,17 @@ public sealed class RaftOptionsValidator : IValidateOptions<RaftOptions>
         if (localEndpoint is not null && localEndpoint.Port + options.DataGroupCount > IPEndPoint.MaxPort)
         {
             failures.Add("Raft:PublicEndpoint does not leave enough consecutive ports for all groups.");
+        }
+
+        if (options.DataPortRangeStart is < 1 or > IPEndPoint.MaxPort || options.DataPortRangeCount < 1 ||
+            options.DataPortRangeStart + options.DataPortRangeCount - 1 > IPEndPoint.MaxPort)
+        {
+            failures.Add("Raft data-group port range is invalid.");
+        }
+
+        if (options.CapacityBytes < 0)
+        {
+            failures.Add("Raft:CapacityBytes may not be negative.");
         }
 
         if (options.SnapshotEveryEntries < 1 || options.TransmissionBlockSize < 1_024)
@@ -331,6 +383,34 @@ internal sealed class RebalancingOptionsValidator : IValidateOptions<Rebalancing
             options.Cooldown < TimeSpan.Zero || options.MinimumImprovementRatio is < 0 or > 1)
         {
             failures.Add("Rebalancing move limits, intervals, cooldown, or improvement ratio are invalid.");
+        }
+
+        return ValidationHelpers.Result(failures);
+    }
+}
+
+internal sealed class DataPlacementOptionsValidator : IValidateOptions<DataPlacementOptions>
+{
+    public ValidateOptionsResult Validate(string? name, DataPlacementOptions options)
+    {
+        List<string> failures = [];
+        if (options.ReplicationFactor is < 1 or > 7)
+        {
+            failures.Add("DataPlacement:ReplicationFactor must be between 1 and 7.");
+        }
+
+        if (options.ReserveRatio is < 0 or >= 1 ||
+            options.TargetUtilizationRatio <= options.ReserveRatio ||
+            options.HighWatermarkRatio <= options.TargetUtilizationRatio ||
+            options.HighWatermarkRatio >= 1)
+        {
+            failures.Add("DataPlacement reserve, target, and high-watermark ratios are inconsistent.");
+        }
+
+        if (options.TargetDataGroupBytes < 1 || options.MinimumGroupReplicasPerNode < 1 ||
+            options.MaximumTransferBytesPerSecond < 1 || options.FailureReplacementDelay < TimeSpan.Zero)
+        {
+            failures.Add("DataPlacement size, replica-density, transfer, or replacement defaults are invalid.");
         }
 
         return ValidationHelpers.Result(failures);
@@ -520,6 +600,7 @@ internal sealed class ApiOptionsValidator : IValidateOptions<ApiOptions>
         }
 
         ValidationHelpers.RequirePositive(options.MaximumBatchSize, "Api:MaximumBatchSize", failures);
+        ValidationHelpers.RequirePositive(options.MaximumDocumentOffset, "Api:MaximumDocumentOffset", failures);
         if (options.MaximumRequestBodyBytes < 1 || options.RequestTimeout <= TimeSpan.Zero)
         {
             failures.Add("Api request limits must be positive.");

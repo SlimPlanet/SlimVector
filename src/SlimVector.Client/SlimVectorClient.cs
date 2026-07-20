@@ -90,8 +90,39 @@ public sealed class SlimVectorClient
             }
         }
 
-        DocumentList response = await GetAsync(query.ToString(), ClientJsonContext.Default.DocumentList, cancellationToken).ConfigureAwait(false);
+        SlimVectorDocumentPage response = await GetAsync(
+            query.ToString(),
+            ClientJsonContext.Default.SlimVectorDocumentPage,
+            cancellationToken).ConfigureAwait(false);
         return response.Documents;
+    }
+
+    public async Task<SlimVectorDocumentPage> GetDocumentPageAsync(
+        string collection,
+        IReadOnlyList<string>? ids = null,
+        int offset = 0,
+        int limit = 100,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        StringBuilder query = new($"{DocumentsPath(collection)}?offset={offset}&limit={limit}");
+        if (!string.IsNullOrWhiteSpace(continuationToken))
+        {
+            query.Append("&continuationToken=").Append(Uri.EscapeDataString(continuationToken));
+        }
+
+        if (ids is not null)
+        {
+            foreach (string id in ids)
+            {
+                query.Append("&ids=").Append(Uri.EscapeDataString(id));
+            }
+        }
+
+        return await GetAsync(
+            query.ToString(),
+            ClientJsonContext.Default.SlimVectorDocumentPage,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<BatchResult> DeleteDocumentsAsync(

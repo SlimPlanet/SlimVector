@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using MemoryPack;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using SlimVector.Application.Configuration;
+using SlimVector.Application.Routing;
 using SlimVector.Domain;
 using SlimVector.Raft;
 using SlimVector.Raft.Commands;
@@ -61,6 +63,13 @@ public sealed class PlacementController : IPlacementController, IDisposable
     private readonly IConsensusCoordinator _consensus;
     private readonly TimeProvider _timeProvider;
     private readonly RebalancingOptions _options;
+    private readonly IClusterTopologyStore? _topologyStore;
+    private readonly IDataNodeQueryClient? _queryClient;
+    private readonly ILocalDataQueryService? _localQueries;
+    private readonly ILocalRaftGroupManager? _localGroups;
+    private readonly IDataNodeRpcClient? _dataRpc;
+    private readonly ILocalRaftCommandReplicator? _localReplicator;
+    private readonly long _maximumTransferBytesPerSecond;
     private readonly ConcurrentDictionary<Guid, RebalancePlan> _plans = new();
     private readonly ConcurrentDictionary<(Guid CollectionId, int ShardId), DateTimeOffset> _lastMoveCompletion = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -70,7 +79,14 @@ public sealed class PlacementController : IPlacementController, IDisposable
         IStorageEngine storage,
         IConsensusCoordinator consensus,
         TimeProvider timeProvider,
-        IOptions<RebalancingOptions> options)
+        IOptions<RebalancingOptions> options,
+        IClusterTopologyStore? topologyStore = null,
+        IDataNodeQueryClient? queryClient = null,
+        ILocalDataQueryService? localQueries = null,
+        ILocalRaftGroupManager? localGroups = null,
+        IDataNodeRpcClient? dataRpc = null,
+        ILocalRaftCommandReplicator? localReplicator = null,
+        IOptions<DataPlacementOptions>? placementOptions = null)
     {
         ArgumentNullException.ThrowIfNull(storage);
         ArgumentNullException.ThrowIfNull(consensus);
@@ -80,6 +96,13 @@ public sealed class PlacementController : IPlacementController, IDisposable
         _consensus = consensus;
         _timeProvider = timeProvider;
         _options = options.Value;
+        _topologyStore = topologyStore;
+        _queryClient = queryClient;
+        _localQueries = localQueries;
+        _localGroups = localGroups;
+        _dataRpc = dataRpc;
+        _localReplicator = localReplicator;
+        _maximumTransferBytesPerSecond = placementOptions?.Value.MaximumTransferBytesPerSecond ?? long.MaxValue;
     }
 
     public async ValueTask<RebalancePlan> PlanAsync(
@@ -88,12 +111,18 @@ public sealed class PlacementController : IPlacementController, IDisposable
     {
         EnsureLeader();
         IReadOnlyList<CollectionDefinition> collections = await _storage.ListCollectionsAsync(cancellationToken).ConfigureAwait(false);
-        string[] groups = _consensus.GetStatuses()
-            .Select(static status => status.GroupId)
-            .Where(static group => !string.Equals(group, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
+        string[] groups = _topologyStore is null
+            ? _consensus.GetStatuses()
+                .Select(static status => status.GroupId)
+                .Where(static group => !string.Equals(group, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray()
+            : (await _topologyStore.GetAsync(cancellationToken).ConfigureAwait(false)).DataGroups
+                .Where(static group => group.State != DataGroupState.Removed)
+                .Select(static group => group.GroupId)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
         if (groups.Length == 0)
         {
             throw new InvalidOperationException("No data group is available for placement.");
@@ -298,10 +327,10 @@ public sealed class PlacementController : IPlacementController, IDisposable
         ShardPlacement moving,
         CancellationToken cancellationToken)
     {
-        IReadOnlyDictionary<string, DocumentRecord> documents = await _storage
-            .LoadDocumentsAsync(collection.Id, cancellationToken)
-            .ConfigureAwait(false);
-        DocumentRecord[] shardDocuments = documents.Values
+        DocumentRecord[] shardDocuments = (await LoadGroupDocumentsAsync(
+                collection,
+                moving.SourceDataGroupId ?? moving.DataGroupId,
+                cancellationToken).ConfigureAwait(false))
             .Where(document => collection.Placement!.Resolve(collection.Id, document.Id).ShardId == moving.ShardId)
             .OrderBy(static document => document.Id, StringComparer.Ordinal)
             .ToArray();
@@ -323,6 +352,12 @@ public sealed class PlacementController : IPlacementController, IDisposable
                         CurrentChecksum = ComputeDocumentChecksum(shardDocuments),
                     };
                     await WriteCheckpointAsync(collection.Id, checkpoint, cancellationToken).ConfigureAwait(false);
+                    await ReplicateShardTransferAsync(
+                        moving.TargetDataGroupId!,
+                        collection,
+                        shardDocuments.Select(StorageOperation.Upsert).ToArray(),
+                        moving.ShardId,
+                        cancellationToken).ConfigureAwait(false);
                     next = moving with
                     {
                         State = ShardPlacementState.CatchingUp,
@@ -340,6 +375,43 @@ public sealed class PlacementController : IPlacementController, IDisposable
                     checkpoint.CurrentChecksum = ComputeDocumentChecksum(shardDocuments);
                     ValidateCheckpoint(checkpoint, shardDocuments);
                     await WriteCheckpointAsync(collection.Id, checkpoint, cancellationToken).ConfigureAwait(false);
+                    await ReplicateShardTransferAsync(
+                        moving.TargetDataGroupId!,
+                        collection,
+                        checkpoint.Delta.Select(RaftCommandCodec.ToStorage).ToArray(),
+                        moving.ShardId,
+                        cancellationToken).ConfigureAwait(false);
+                    DocumentRecord[] targetDocuments = (await LoadGroupDocumentsAsync(
+                            collection,
+                            moving.TargetDataGroupId!,
+                            cancellationToken).ConfigureAwait(false))
+                        .Where(document => collection.Placement!.Resolve(collection.Id, document.Id).ShardId == moving.ShardId)
+                        .OrderBy(static document => document.Id, StringComparer.Ordinal)
+                        .ToArray();
+                    if (!string.Equals(
+                            ComputeDocumentChecksum(targetDocuments),
+                            checkpoint.CurrentChecksum,
+                            StringComparison.Ordinal))
+                    {
+                        StorageOperation[] repair = BuildDelta(
+                                targetDocuments.Select(RaftCommandCodec.FromDomain).ToArray(),
+                                shardDocuments)
+                            .Select(RaftCommandCodec.ToStorage)
+                            .ToArray();
+                        await ReplicateShardTransferAsync(
+                            moving.TargetDataGroupId!,
+                            collection,
+                            repair,
+                            moving.ShardId,
+                            cancellationToken).ConfigureAwait(false);
+                        next = moving with
+                        {
+                            State = ShardPlacementState.CatchingUp,
+                            ReplayedThroughVersion = checkpoint.ReplayedThroughVersion,
+                        };
+                        break;
+                    }
+
                     next = moving with
                     {
                         State = ShardPlacementState.Switching,
@@ -362,15 +434,39 @@ public sealed class PlacementController : IPlacementController, IDisposable
                     break;
                 }
             case ShardPlacementState.Draining:
-                next = moving with
                 {
-                    State = ShardPlacementState.Active,
-                    DataGroupId = moving.TargetDataGroupId!,
-                    SourceDataGroupId = null,
-                    TargetDataGroupId = null,
-                    OperationId = null,
-                };
-                break;
+                    ShardMoveCheckpoint checkpoint = await ReadCheckpointAsync(collection.Id, moving, cancellationToken)
+                        .ConfigureAwait(false);
+                    HashSet<string> transferredIds = checkpoint.SnapshotDocuments.Select(static document => document.Id)
+                        .ToHashSet(StringComparer.Ordinal);
+                    foreach (RaftStorageOperation operation in checkpoint.Delta)
+                    {
+                        if (operation.Kind == DocumentMutationKind.Delete)
+                        {
+                            transferredIds.Remove(operation.Id);
+                        }
+                        else
+                        {
+                            transferredIds.Add(operation.Id);
+                        }
+                    }
+
+                    await ReplicateShardTransferAsync(
+                        moving.SourceDataGroupId!,
+                        collection,
+                        transferredIds.Select(static id => StorageOperation.Delete(id, long.MaxValue)).ToArray(),
+                        moving.ShardId,
+                        cancellationToken).ConfigureAwait(false);
+                    next = moving with
+                    {
+                        State = ShardPlacementState.Active,
+                        DataGroupId = moving.TargetDataGroupId!,
+                        SourceDataGroupId = null,
+                        TargetDataGroupId = null,
+                        OperationId = null,
+                    };
+                    break;
+                }
             default:
                 next = moving;
                 break;
@@ -434,7 +530,9 @@ public sealed class PlacementController : IPlacementController, IDisposable
         {
             if (!current.ContainsKey(document.Id))
             {
-                delta.Add(RaftCommandCodec.FromStorage(StorageOperation.Delete(document.Id, document.Version)));
+                delta.Add(RaftCommandCodec.FromStorage(StorageOperation.Delete(
+                    document.Id,
+                    checked(document.Version + 1))));
             }
         }
 
@@ -480,6 +578,110 @@ public sealed class PlacementController : IPlacementController, IDisposable
             throw new InvalidOperationException("The shard snapshot and ordered delta do not reconstruct the source state.");
         }
     }
+
+    private async ValueTask<IReadOnlyList<DocumentRecord>> LoadGroupDocumentsAsync(
+        CollectionDefinition collection,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        if (_queryClient is null || _localQueries is null || _localGroups is null)
+        {
+            return (await _storage.LoadDocumentsAsync(collection.Id, cancellationToken).ConfigureAwait(false)).Values.ToArray();
+        }
+
+        HashSet<string> hosted = _localGroups.GetHostedDataGroupIds().ToHashSet(StringComparer.Ordinal);
+        return hosted.Contains(groupId)
+            ? await _localQueries.GetRawDocumentsLocalAsync(
+                collection.Name,
+                groupId,
+                ReadConsistency.Linearizable,
+                cancellationToken).ConfigureAwait(false)
+            : await _queryClient.GetRawDocumentsAsync(
+                collection.Name,
+                groupId,
+                ReadConsistency.Linearizable,
+                cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask ReplicateShardTransferAsync(
+        string groupId,
+        CollectionDefinition collection,
+        StorageOperation[] operations,
+        int shardId,
+        CancellationToken cancellationToken)
+    {
+        IDataNodeRpcClient? dataRpc = _dataRpc;
+        ILocalRaftCommandReplicator? localReplicator = _localReplicator;
+        ILocalRaftGroupManager? localGroups = _localGroups;
+        if (operations.Length == 0 || dataRpc is null || localReplicator is null || localGroups is null)
+        {
+            return;
+        }
+
+        bool local = localGroups.GetHostedDataGroupIds().Contains(groupId, StringComparer.Ordinal);
+        foreach (StorageOperation[] batch in ChunkTransferOperations(operations))
+        {
+            RaftCommandEnvelope command = RaftCommandCodec.ShardTransfer(
+                Guid.NewGuid(),
+                groupId,
+                collection,
+                batch,
+                shardId);
+            int payloadBytes = RaftCommandCodec.Serialize(command).Length;
+            long started = Stopwatch.GetTimestamp();
+            if (local)
+            {
+                await localReplicator.ReplicateLocalAsync(command, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await dataRpc.ReplicateAsync(command, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (_maximumTransferBytesPerSecond < long.MaxValue)
+            {
+                TimeSpan minimum = TimeSpan.FromSeconds(payloadBytes / (double)_maximumTransferBytesPerSecond);
+                TimeSpan remaining = minimum - Stopwatch.GetElapsedTime(started);
+                if (remaining > TimeSpan.Zero)
+                {
+                    await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+    }
+
+    private static List<StorageOperation[]> ChunkTransferOperations(StorageOperation[] operations)
+    {
+        const long targetBytes = 4L * 1_024 * 1_024;
+        List<StorageOperation[]> batches = [];
+        List<StorageOperation> current = [];
+        long currentBytes = 0;
+        foreach (StorageOperation operation in operations)
+        {
+            long estimatedBytes = EstimateTransferBytes(operation);
+            if (current.Count > 0 && currentBytes + estimatedBytes > targetBytes)
+            {
+                batches.Add(current.ToArray());
+                current.Clear();
+                currentBytes = 0;
+            }
+
+            current.Add(operation);
+            currentBytes = checked(currentBytes + estimatedBytes);
+        }
+
+        if (current.Count > 0)
+        {
+            batches.Add(current.ToArray());
+        }
+
+        return batches;
+    }
+
+    private static long EstimateTransferBytes(StorageOperation operation) => operation.Document is null
+        ? 128 + operation.Id.Length * sizeof(char)
+        : 256L + operation.Id.Length * sizeof(char) + operation.Document.Text.Length * sizeof(char) +
+          operation.Document.Vector.LongLength * sizeof(float) + operation.Document.Metadata.Count * 128L;
 
     private static string ComputeDocumentChecksum(IEnumerable<DocumentRecord> documents)
     {

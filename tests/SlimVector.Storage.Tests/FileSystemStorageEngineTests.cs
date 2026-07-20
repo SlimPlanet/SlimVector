@@ -5,6 +5,62 @@ namespace SlimVector.Storage.Tests;
 public sealed class FileSystemStorageEngineTests
 {
     [Fact]
+    public async Task DistributedStorageKeepsDataGroupsPhysicallyIsolatedAndPersistsTopology()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        StorageSettings settings = new() { Path = directory.Path, FlushToDisk = true };
+        CollectionDefinition definition = CollectionDefinition.Create("isolated", 2, DistanceMetric.Cosine);
+        using FileSystemDataGroupStorage groups = new(settings);
+        using FileSystemClusterTopologyStore topologyStore = new(settings);
+        await groups.InitializeAsync(cancellationToken);
+        await topologyStore.InitializeAsync(cancellationToken);
+        await groups.EnsureDataGroupAsync("data-0", cancellationToken);
+        await groups.EnsureDataGroupAsync("data-1", cancellationToken);
+        await groups.EnsureCollectionAsync("data-0", definition, cancellationToken);
+        await groups.EnsureCollectionAsync("data-1", definition, cancellationToken);
+        await groups.AppendAsync(
+            "data-0",
+            definition.Id,
+            [StorageOperation.Upsert(Document("left", [1, 0]))],
+            cancellationToken);
+        await groups.AppendAsync(
+            "data-1",
+            definition.Id,
+            [StorageOperation.Upsert(Document("right", [0, 1]))],
+            cancellationToken);
+
+        Assert.Equal(["left"], (await groups.LoadDocumentsAsync("data-0", definition.Id, cancellationToken)).Keys);
+        Assert.Equal(["right"], (await groups.LoadDocumentsAsync("data-1", definition.Id, cancellationToken)).Keys);
+        Assert.True(Directory.Exists(Path.Combine(directory.Path, "data-groups", "data-0", "collections")));
+        Assert.True(Directory.Exists(Path.Combine(directory.Path, "data-groups", "data-1", "collections")));
+
+        ClusterTopology topology = new()
+        {
+            Epoch = 2,
+            Nodes = Enumerable.Range(0, 3).Select(index => Node($"node-{index}", 4_000 + index)).ToArray(),
+            DataGroups =
+            [
+                new DataGroupDescriptor
+                {
+                    GroupId = "data-0",
+                    ReplicationFactor = 3,
+                    State = DataGroupState.Active,
+                    Replicas = Enumerable.Range(0, 3).Select(index => new DataGroupReplica
+                    {
+                        NodeId = $"node-{index}",
+                        RaftEndpoint = $"http://127.0.0.1:{4_000 + index}",
+                    }).ToArray(),
+                },
+            ],
+        };
+        await topologyStore.ReplaceAsync(topology, cancellationToken);
+        Assert.Equal(2, (await topologyStore.GetAsync(cancellationToken)).Epoch);
+        Assert.True(File.Exists(Path.Combine(directory.Path, "storage-format-v2.json")));
+        Assert.True(File.Exists(Path.Combine(directory.Path, "cluster-topology-v2.json")));
+    }
+
+    [Fact]
     public async Task LogicalIoMetricsAreMonotonicAndRecordDurableFlushes()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
@@ -119,5 +175,19 @@ public sealed class FileSystemStorageEngineTests
         Metadata = [],
         Version = 1,
         UpdatedAt = DateTimeOffset.UtcNow,
+    };
+
+    private static ClusterNodeDescriptor Node(string nodeId, int port) => new()
+    {
+        NodeId = nodeId,
+        ApiEndpoint = $"http://127.0.0.1:{port + 100}",
+        InternalEndpoint = $"http://127.0.0.1:{port + 100}",
+        RaftHost = "127.0.0.1",
+        Zone = $"zone-{port % 3}",
+        CapacityBytes = 1L << 40,
+        RaftPortStart = port,
+        RaftPortCount = 10,
+        State = ClusterNodeState.Active,
+        LastSeenAt = DateTimeOffset.UtcNow,
     };
 }

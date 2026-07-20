@@ -8,6 +8,7 @@ using SlimVector.Application.Admission;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Placement;
+using SlimVector.Application.Routing;
 using SlimVector.Application.Writes;
 using SlimVector.Domain;
 using SlimVector.Raft;
@@ -101,6 +102,9 @@ app.MapGet("/metrics", static async (
     IGeoReplicationReceiver geoReceiver,
     IAdmissionController admission,
     IPlacementController placementController,
+    IClusterTopologyService clusterTopologyService,
+    IDataGroupStorage dataGroupStorage,
+    DataNodeRpcMetrics dataNodeRpcMetrics,
     StorageMetrics storageMetrics,
     Microsoft.Extensions.Options.IOptions<ObservabilityOptions> observability,
     CancellationToken cancellationToken) =>
@@ -113,6 +117,8 @@ app.MapGet("/metrics", static async (
     PlacementControllerStatus placementStatus = await placementController
         .GetStatusAsync(cancellationToken)
         .ConfigureAwait(false);
+    ClusterTopology clusterTopology = await clusterTopologyService.GetAsync(cancellationToken).ConfigureAwait(false);
+    DataNodeRpcMetricsSnapshot rpcMetrics = dataNodeRpcMetrics.GetSnapshot();
     long memory = GC.GetTotalMemory(forceFullCollection: false);
     GCMemoryInfo gcMemory = GC.GetGCMemoryInfo();
     ReadOnlySpan<GCGenerationInfo> generations = gcMemory.GenerationInfo;
@@ -123,6 +129,10 @@ app.MapGet("/metrics", static async (
     long pohBytes = generations.Length > 4 ? generations[4].SizeAfterBytes : 0;
     StorageMetricsSnapshot storage = storageMetrics.GetSnapshot();
     OperationalMetricsSnapshot operations = operationalMetrics.GetSnapshot();
+    HashSet<string> availableClusterNodeIds = clusterTopology.Nodes
+        .Where(static node => node.State is ClusterNodeState.Active or ClusterNodeState.Draining)
+        .Select(static node => node.NodeId)
+        .ToHashSet(StringComparer.Ordinal);
     string body = $"slimvector_build_info{{service=\"{observability.Value.ServiceName}\"}} 1\n" +
         $"# TYPE slimvector_open_collections gauge\nslimvector_open_collections {database.OpenCollectionCount}\n" +
         $"# TYPE slimvector_managed_memory_bytes gauge\nslimvector_managed_memory_bytes {memory}\n";
@@ -139,6 +149,50 @@ app.MapGet("/metrics", static async (
         $"# TYPE slimvector_storage_read_bytes_total counter\nslimvector_storage_read_bytes_total {storage.BytesRead}\n" +
         $"# TYPE slimvector_storage_written_bytes_total counter\nslimvector_storage_written_bytes_total {storage.BytesWritten}\n" +
         $"# TYPE slimvector_storage_durable_flushes_total counter\nslimvector_storage_durable_flushes_total {storage.DurableFlushes}\n";
+    body += $"# TYPE slimvector_cluster_topology_epoch gauge\nslimvector_cluster_topology_epoch {clusterTopology.Epoch}\n" +
+        $"# TYPE slimvector_cluster_unavailable_nodes gauge\nslimvector_cluster_unavailable_nodes {clusterTopology.Nodes.Count(static node => node.State == ClusterNodeState.Unavailable)}\n" +
+        $"# TYPE slimvector_cluster_under_replicated_groups gauge\nslimvector_cluster_under_replicated_groups {clusterTopology.DataGroups.Count(group => group.Replicas.Count(replica => replica.Healthy && availableClusterNodeIds.Contains(replica.NodeId)) < group.ReplicationFactor)}\n" +
+        $"# TYPE slimvector_cluster_replica_moves gauge\nslimvector_cluster_replica_moves {clusterTopology.ReplicaMoves.Count(static move => move.State != ReplicaMoveState.Completed)}\n" +
+        $"# TYPE slimvector_routing_epoch_rejections_total counter\nslimvector_routing_epoch_rejections_total {rpcMetrics.RoutingEpochRejections}\n" +
+        $"# TYPE slimvector_data_rpc_requests_total counter\nslimvector_data_rpc_requests_total{{direction=\"outgoing\"}} {rpcMetrics.OutgoingRequests}\n" +
+        $"slimvector_data_rpc_requests_total{{direction=\"incoming\"}} {rpcMetrics.IncomingRequests}\n" +
+        $"# TYPE slimvector_data_rpc_failures_total counter\nslimvector_data_rpc_failures_total {rpcMetrics.FailedRequests}\n" +
+        $"# TYPE slimvector_data_rpc_duration_microseconds_total counter\nslimvector_data_rpc_duration_microseconds_total {rpcMetrics.DurationMicroseconds}\n";
+    foreach (ClusterNodeDescriptor node in clusterTopology.Nodes)
+    {
+        string nodeId = EscapePrometheusLabel(node.NodeId);
+        body += $"slimvector_node_capacity_bytes{{node=\"{nodeId}\"}} {node.CapacityBytes}\n" +
+            $"slimvector_node_used_bytes{{node=\"{nodeId}\"}} {node.UsedBytes}\n" +
+            $"slimvector_node_assigned_bytes{{node=\"{nodeId}\"}} {node.AssignedBytes}\n" +
+            $"slimvector_node_free_bytes{{node=\"{nodeId}\"}} {Math.Max(0, node.CapacityBytes - node.UsedBytes)}\n";
+    }
+
+    HashSet<string> localDataGroups = dataGroupStorage.GetLocalDataGroupIds().ToHashSet(StringComparer.Ordinal);
+    foreach (DataGroupDescriptor group in clusterTopology.DataGroups)
+    {
+        string groupId = EscapePrometheusLabel(group.GroupId);
+        long localBytes = localDataGroups.Contains(group.GroupId) ? dataGroupStorage.GetAllocatedBytes(group.GroupId) : 0;
+        body += $"slimvector_data_group_estimated_bytes{{group=\"{groupId}\"}} {group.EstimatedBytes}\n" +
+            $"slimvector_data_group_local_bytes{{group=\"{groupId}\"}} {localBytes}\n" +
+            $"slimvector_data_group_replicas{{group=\"{groupId}\"}} {group.Replicas.Length}\n";
+        foreach (DataGroupReplica replica in group.Replicas)
+        {
+            string nodeId = EscapePrometheusLabel(replica.NodeId);
+            bool healthy = replica.Healthy && availableClusterNodeIds.Contains(replica.NodeId);
+            body += $"slimvector_data_group_replica_healthy{{group=\"{groupId}\",node=\"{nodeId}\"}} {(healthy ? 1 : 0)}\n";
+            if (replica.ObservedReplicationLag.HasValue)
+            {
+                body += $"slimvector_data_group_replica_lag_entries{{group=\"{groupId}\",node=\"{nodeId}\"}} {replica.ObservedReplicationLag.Value}\n";
+            }
+        }
+    }
+    foreach (ReplicaMoveDescriptor move in clusterTopology.ReplicaMoves.Where(static move => move.State != ReplicaMoveState.Completed))
+    {
+        string operation = move.OperationId.ToString("N");
+        string group = EscapePrometheusLabel(move.GroupId);
+        string state = EscapePrometheusLabel(move.State.ToString());
+        body += $"slimvector_cluster_replica_move_estimated_bytes{{operation=\"{operation}\",group=\"{group}\",state=\"{state}\"}} {move.EstimatedBytes}\n";
+    }
     body += $"slimvector_search_requests_total {operations.Searches}\n" +
         $"slimvector_search_failures_total {operations.SearchFailures}\n" +
         $"slimvector_search_slow_total {operations.SlowSearches}\n" +
@@ -270,6 +324,9 @@ app.MapSlimVectorApi();
 app.MapBackupAdminApi();
 app.MapSlimVectorAdminApi();
 app.MapGeoReplicationEndpoint();
+app.MapDataNodeRpcEndpoint();
+app.MapDataNodeQueryEndpoint();
+app.MapCatalogCacheEndpoint();
 app.Run();
 
 static string EscapePrometheusLabel(string value) => value

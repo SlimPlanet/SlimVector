@@ -141,16 +141,30 @@ internal static class ApiEndpoints
     private static async Task<IResult> GetDocumentsAsync(
         string name,
         [FromQuery] string[]? ids,
-        [FromQuery] int offset,
-        [FromQuery] int limit,
+        [FromQuery] int? offset,
+        [FromQuery] int? limit,
+        [FromQuery] string? continuationToken,
         ISlimVectorDatabase database,
+        IOptions<ApiOptions> options,
         CancellationToken cancellationToken)
     {
-        int effectiveLimit = limit == 0 ? 100 : limit;
-        IReadOnlyList<DocumentRecord> documents = await database
-            .GetDocumentsAsync(name, ids, offset, effectiveLimit, cancellationToken)
+        int effectiveOffset = offset ?? 0;
+        int effectiveLimit = limit is null or 0 ? 100 : limit.Value;
+        if (effectiveOffset > options.Value.MaximumDocumentOffset)
+        {
+            throw new DomainException(
+                ErrorCodes.InvalidLimit,
+                $"Offset pagination is limited to {options.Value.MaximumDocumentOffset}; use continuationToken for deeper pages.");
+        }
+
+        DocumentPage page = await database
+            .GetDocumentPageAsync(name, ids, effectiveOffset, effectiveLimit, continuationToken, cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Ok(new DocumentListResponse { Documents = documents.Select(ContractMapper.ToResponse).ToArray() });
+        return TypedResults.Ok(new DocumentListResponse
+        {
+            Documents = page.Documents.Select(ContractMapper.ToResponse).ToArray(),
+            ContinuationToken = page.ContinuationToken,
+        });
     }
 
     private static async Task<IResult> DeleteDocumentsAsync(

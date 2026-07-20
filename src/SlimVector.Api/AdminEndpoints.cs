@@ -7,6 +7,8 @@ using SlimVector.Application;
 using SlimVector.Application.Configuration;
 using SlimVector.Application.Indexes;
 using SlimVector.Application.Placement;
+using SlimVector.Application.Routing;
+using SlimVector.Domain;
 using SlimVector.Raft;
 
 namespace SlimVector.Api;
@@ -36,6 +38,17 @@ internal static class AdminEndpoints
         membership.MapPost("/demote", DemoteMemberAsync).Produces<AdminOperationResponse>();
         membership.MapPost("/remove", RemoveMemberAsync).Produces<AdminOperationResponse>();
         membership.MapPost("/transfer-leadership", TransferLeadershipAsync).Produces<AdminOperationResponse>();
+
+        RouteGroupBuilder nodes = admin.MapGroup("/cluster/nodes").WithTags("Cluster nodes");
+        nodes.MapGet("/topology", GetTopologyAsync).Produces<ClusterTopologyResponse>();
+        nodes.MapPost("/join", JoinNodeAsync).Produces<ClusterTopologyResponse>();
+        nodes.MapPost("/{nodeId}/drain", DrainNodeAsync).Produces<ClusterTopologyResponse>();
+        nodes.MapDelete("/{nodeId}", RemoveNodeAsync).Produces<ClusterTopologyResponse>();
+        nodes.MapGet("/rebalance/plan", PlanNodeRebalanceAsync).Produces<SharedNothingRebalancePlanResponse>();
+        nodes.MapPost("/rebalance/approve", ApproveNodeRebalanceAsync).Produces<ClusterTopologyResponse>();
+
+        RouteGroupBuilder groups = admin.MapGroup("/cluster/groups").WithTags("Data group administration");
+        groups.MapPost("/prepare-replica", PrepareDataGroupReplicaAsync).Produces<AdminOperationResponse>();
 
         RouteGroupBuilder rebalance = admin.MapGroup("/cluster/rebalance").WithTags("Cluster rebalancing");
         rebalance.MapGet("/plan", PlanRebalanceAsync).Produces<RebalancePlanResponse>();
@@ -211,6 +224,150 @@ internal static class AdminEndpoints
         });
     }
 
+    private static async Task<IResult> GetTopologyAsync(
+        HttpContext context,
+        IClusterTopologyService topology,
+        IOptions<ApiOptions> apiOptions,
+        IOptions<DataPlacementOptions> placementOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        ClusterTopology current = await topology.GetAsync(cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(current, placementOptions.Value));
+    }
+
+    private static async Task<IResult> JoinNodeAsync(
+        ClusterNodeJoinRequest request,
+        HttpContext context,
+        IClusterTopologyService topology,
+        ICatalogCacheSynchronizer catalogCache,
+        ISharedNothingRebalanceCoordinator rebalanceCoordinator,
+        IOptions<ApiOptions> apiOptions,
+        IOptions<DataPlacementOptions> placementOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        ClusterTopology current = await topology.JoinAsync(
+            new ClusterNodeRegistration(
+                request.NodeId,
+                request.ApiEndpoint,
+                request.InternalEndpoint,
+                request.RaftHost,
+                request.Zone,
+                request.CapacityBytes,
+                request.RaftPortStart,
+                request.RaftPortCount,
+                request.Roles),
+            cancellationToken).ConfigureAwait(false);
+        await catalogCache.SeedNodeAsync(request.InternalEndpoint, cancellationToken).ConfigureAwait(false);
+        SharedNothingRebalancePlan plan = await rebalanceCoordinator.PlanAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(current, placementOptions.Value, plan));
+    }
+
+    private static async Task<IResult> DrainNodeAsync(
+        string nodeId,
+        HttpContext context,
+        IClusterTopologyService topology,
+        IOptions<ApiOptions> apiOptions,
+        IOptions<DataPlacementOptions> placementOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        ClusterTopology current = await topology.DrainAsync(nodeId, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(current, placementOptions.Value));
+    }
+
+    private static async Task<IResult> RemoveNodeAsync(
+        string nodeId,
+        HttpContext context,
+        IClusterTopologyService topology,
+        IOptions<ApiOptions> apiOptions,
+        IOptions<DataPlacementOptions> placementOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        ClusterTopology current = await topology.RemoveAsync(nodeId, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(current, placementOptions.Value));
+    }
+
+    private static async Task<IResult> PlanNodeRebalanceAsync(
+        string? drainNodeId,
+        HttpContext context,
+        ISharedNothingRebalanceCoordinator coordinator,
+        IOptions<ApiOptions> apiOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        SharedNothingRebalancePlan plan = await coordinator
+            .PlanAsync(drainNodeId, cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(plan));
+    }
+
+    private static async Task<IResult> ApproveNodeRebalanceAsync(
+        RebalanceApprovalRequest request,
+        HttpContext context,
+        ISharedNothingRebalanceCoordinator coordinator,
+        IOptions<ApiOptions> apiOptions,
+        IOptions<DataPlacementOptions> placementOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        ClusterTopology topology = await coordinator.ApproveAsync(request.PlanId, cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(ToResponse(topology, placementOptions.Value));
+    }
+
+    private static async Task<IResult> PrepareDataGroupReplicaAsync(
+        PrepareDataGroupReplicaRequest request,
+        HttpContext context,
+        ILocalDataGroupProvisioner provisioner,
+        IOptions<ApiOptions> apiOptions,
+        CancellationToken cancellationToken)
+    {
+        IResult? unauthorized = Authorize(context, apiOptions.Value);
+        if (unauthorized is not null)
+        {
+            return unauthorized;
+        }
+
+        await provisioner.PrepareJoiningReplicaAsync(
+            request.GroupId,
+            request.RaftEndpoint,
+            cancellationToken).ConfigureAwait(false);
+        return TypedResults.Ok(new AdminOperationResponse { Status = "prepared" });
+    }
+
     private static Task<IResult> AddMemberAsync(
         MembershipChangeRequest request,
         HttpContext context,
@@ -381,6 +538,107 @@ internal static class AdminEndpoints
             TargetDataGroupId = action.TargetDataGroupId,
             Reason = action.Reason,
         }).ToArray(),
+    };
+
+    private static ClusterTopologyResponse ToResponse(
+        ClusterTopology topology,
+        DataPlacementOptions options,
+        SharedNothingRebalancePlan? suggestedPlan = null)
+    {
+        long rawBytes = topology.Nodes
+            .Where(static node => node.State is ClusterNodeState.Active or ClusterNodeState.Draining &&
+                node.Roles.Contains("data", StringComparer.OrdinalIgnoreCase))
+            .Sum(static node => node.CapacityBytes);
+        long reservedBytes = (long)Math.Ceiling(rawBytes * options.ReserveRatio);
+        return new ClusterTopologyResponse
+        {
+            FormatVersion = topology.FormatVersion,
+            Epoch = topology.Epoch,
+            CatalogNodeIds = topology.CatalogNodeIds,
+            Nodes = topology.Nodes.OrderBy(static node => node.NodeId, StringComparer.Ordinal)
+                .Select(static node => new ClusterNodeResponse
+                {
+                    NodeId = node.NodeId,
+                    ApiEndpoint = node.ApiEndpoint,
+                    InternalEndpoint = node.InternalEndpoint,
+                    RaftHost = node.RaftHost,
+                    Zone = node.Zone,
+                    CapacityBytes = node.CapacityBytes,
+                    UsedBytes = node.UsedBytes,
+                    AssignedBytes = node.AssignedBytes,
+                    RaftPortStart = node.RaftPortStart,
+                    RaftPortCount = node.RaftPortCount,
+                    State = node.State,
+                    LastSeenAt = node.LastSeenAt,
+                    Roles = node.Roles,
+                }).ToArray(),
+            DataGroups = topology.DataGroups.OrderBy(static group => group.GroupId, StringComparer.Ordinal)
+                .Select(ToResponse).ToArray(),
+            ReplicaMoves = topology.ReplicaMoves.OrderBy(static move => move.UpdatedAt)
+                .Select(static move => new ReplicaMoveStatusResponse
+                {
+                    OperationId = move.OperationId,
+                    PlanId = move.PlanId,
+                    GroupId = move.GroupId,
+                    SourceNodeId = move.SourceNodeId,
+                    TargetNodeId = move.TargetNodeId,
+                    EstimatedBytes = move.EstimatedBytes,
+                    State = move.State,
+                    LastError = move.LastError,
+                    UpdatedAt = move.UpdatedAt,
+                }).ToArray(),
+            Capacity = new ClusterCapacityResponse
+            {
+                RawBytes = rawBytes,
+                ReservedBytes = reservedBytes,
+                EstimatedUsableBytes = Math.Max(0, rawBytes - reservedBytes) / options.ReplicationFactor,
+                ReplicationFactor = options.ReplicationFactor,
+            },
+            SuggestedRebalancePlan = suggestedPlan is null ? null : ToResponse(suggestedPlan),
+        };
+    }
+
+    private static DataGroupTopologyResponse ToResponse(DataGroupDescriptor group) => new()
+    {
+        GroupId = group.GroupId,
+        Generation = group.Generation,
+        ReplicationFactor = group.ReplicationFactor,
+        EstimatedBytes = group.EstimatedBytes,
+        State = group.State,
+        Replicas = group.Replicas.Select(static replica => new DataGroupReplicaResponse
+        {
+            NodeId = replica.NodeId,
+            RaftEndpoint = replica.RaftEndpoint,
+            ObservedReplicationLag = replica.ObservedReplicationLag,
+            Healthy = replica.Healthy,
+        }).ToArray(),
+    };
+
+    private static SharedNothingRebalancePlanResponse ToResponse(SharedNothingRebalancePlan plan) => new()
+    {
+        PlanId = plan.PlanId,
+        TopologyEpoch = plan.TopologyEpoch,
+        CreatedAt = plan.CreatedAt,
+        DrainNodeId = plan.DrainNodeId,
+        GroupsToCreate = plan.GroupsToCreate.Select(ToResponse).ToArray(),
+        ReplicaMoves = plan.ReplicaMoves.Select(static move => new ReplicaRelocationResponse
+        {
+            GroupId = move.GroupId,
+            SourceNodeId = move.SourceNodeId,
+            TargetNodeId = move.TargetNodeId,
+            TargetRaftEndpoint = move.TargetRaftEndpoint,
+            EstimatedBytes = move.EstimatedBytes,
+            Reason = move.Reason,
+        }).ToArray(),
+        CapacityChanges = plan.AssignedBytesBefore.Keys
+            .Union(plan.AssignedBytesAfter.Keys, StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .Select(nodeId => new NodeCapacityChangeResponse
+            {
+                NodeId = nodeId,
+                AssignedBytesBefore = plan.AssignedBytesBefore.GetValueOrDefault(nodeId),
+                AssignedBytesAfter = plan.AssignedBytesAfter.GetValueOrDefault(nodeId),
+            }).ToArray(),
     };
 
     private static PlacementControllerResponse ToResponse(PlacementControllerStatus status) => new()

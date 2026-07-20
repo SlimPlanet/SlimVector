@@ -47,6 +47,14 @@ public interface ISlimVectorDatabase
         int limit = 100,
         CancellationToken cancellationToken = default);
 
+    ValueTask<DocumentPage> GetDocumentPageAsync(
+        string collectionName,
+        IReadOnlyList<string>? ids = null,
+        int offset = 0,
+        int limit = 100,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default);
+
     ValueTask<long> CountDocumentsAsync(string collectionName, CancellationToken cancellationToken = default);
 
     ValueTask<SearchResponse> SearchAsync(

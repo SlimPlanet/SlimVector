@@ -5,7 +5,7 @@ using SlimVector.Storage;
 
 namespace SlimVector.Raft;
 
-public sealed class DirectConsensusCoordinator : IConsensusCoordinator
+public sealed class DirectConsensusCoordinator : IConsensusCoordinator, ILocalRaftCommandReplicator
 {
     private const string DataGroupId = "data-0";
     private readonly IRaftCommandApplier _applier;
@@ -57,6 +57,13 @@ public sealed class DirectConsensusCoordinator : IConsensusCoordinator
             RaftCommandCodec.CatalogDelete(Guid.NewGuid(), MultiRaftNode.CatalogGroupId, collection.Id, collection.Name),
             cancellationToken);
 
+    public ValueTask ReplaceTopologyAsync(
+        ClusterTopology topology,
+        CancellationToken cancellationToken = default) =>
+        ApplyAsync(
+            RaftCommandCodec.TopologyReplace(Guid.NewGuid(), MultiRaftNode.CatalogGroupId, topology),
+            cancellationToken);
+
     public ValueTask AppendAsync(
         CollectionDefinition collection,
         IReadOnlyList<StorageOperation> operations,
@@ -68,11 +75,29 @@ public sealed class DirectConsensusCoordinator : IConsensusCoordinator
         CancellationToken cancellationToken = default) =>
         ApplyAsync(RaftCommandCodec.ShardBatch(Guid.NewGuid(), DataGroupId, writes), cancellationToken);
 
+    public ValueTask ReplicateLocalAsync(
+        RaftCommandEnvelope command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        return ApplyAsync(command, cancellationToken);
+    }
+
     public ValueTask ApplyReadBarrierAsync(
         Guid? collectionId,
         ReadConsistency consistency,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ApplyDataGroupReadBarrierAsync(
+        string dataGroupId,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataGroupId);
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.CompletedTask;
     }

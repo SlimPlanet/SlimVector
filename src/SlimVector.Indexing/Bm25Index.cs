@@ -74,7 +74,11 @@ public sealed class Bm25Index
         return true;
     }
 
-    public IReadOnlyList<RankedResult> Search(string query, int limit, IReadOnlySet<string>? candidates = null)
+    public IReadOnlyList<RankedResult> Search(
+        string query,
+        int limit,
+        IReadOnlySet<string>? candidates = null,
+        Bm25CorpusStatistics? corpusStatistics = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
@@ -85,7 +89,13 @@ public sealed class Bm25Index
             return [];
         }
 
-        double averageLength = (double)_totalTerms / _documentLengths.Count;
+        long corpusDocumentCount = corpusStatistics?.DocumentCount ?? _documentLengths.Count;
+        long corpusTotalTerms = corpusStatistics?.TotalTerms ?? _totalTerms;
+        double averageLength = (double)corpusTotalTerms / Math.Max(corpusDocumentCount, 1);
+        Dictionary<string, long>? globalDocumentFrequencies = corpusStatistics?.Terms.ToDictionary(
+            static term => term.Term,
+            static term => term.DocumentFrequency,
+            StringComparer.Ordinal);
         Dictionary<string, double> scores = new(StringComparer.Ordinal);
         foreach (string term in queryTerms)
         {
@@ -94,7 +104,9 @@ public sealed class Bm25Index
                 continue;
             }
 
-            double inverseDocumentFrequency = Math.Log(1 + ((_documentLengths.Count - posting.Count + 0.5) / (posting.Count + 0.5)));
+            long documentFrequency = globalDocumentFrequencies?.GetValueOrDefault(term) ?? posting.Count;
+            double inverseDocumentFrequency = Math.Log(
+                1 + ((corpusDocumentCount - documentFrequency + 0.5) / (documentFrequency + 0.5)));
             foreach ((string id, int termFrequency) in posting)
             {
                 if (candidates is not null && !candidates.Contains(id))
@@ -116,6 +128,30 @@ public sealed class Bm25Index
             .ThenBy(static result => result.Id, StringComparer.Ordinal)
             .Take(limit)
             .ToArray();
+    }
+
+    public Bm25CorpusStatistics GetCorpusStatistics(string query, IReadOnlySet<string>? candidates = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        IEnumerable<KeyValuePair<string, int>> lengths = candidates is null
+            ? _documentLengths
+            : _documentLengths.Where(pair => candidates.Contains(pair.Key));
+        KeyValuePair<string, int>[] included = lengths.ToArray();
+        string[] terms = TextTokenizer.Tokenize(query).Distinct(StringComparer.Ordinal).ToArray();
+        return new Bm25CorpusStatistics
+        {
+            DocumentCount = included.LongLength,
+            TotalTerms = included.Sum(static pair => (long)pair.Value),
+            Terms = terms.Select(term => new Bm25TermStatistics
+            {
+                Term = term,
+                DocumentFrequency = _postings.TryGetValue(term, out Dictionary<string, int>? posting)
+                    ? candidates is null
+                        ? posting.Count
+                        : posting.Keys.LongCount(candidates.Contains)
+                    : 0,
+            }).ToArray(),
+        };
     }
 
     internal byte[] Serialize()
@@ -209,6 +245,24 @@ public sealed class Bm25Index
             }
         }
     }
+}
+
+[MemoryPackable]
+public sealed partial class Bm25CorpusStatistics
+{
+    public long DocumentCount { get; set; }
+
+    public long TotalTerms { get; set; }
+
+    public Bm25TermStatistics[] Terms { get; set; } = [];
+}
+
+[MemoryPackable]
+public sealed partial class Bm25TermStatistics
+{
+    public string Term { get; set; } = string.Empty;
+
+    public long DocumentFrequency { get; set; }
 }
 
 [MemoryPackable]

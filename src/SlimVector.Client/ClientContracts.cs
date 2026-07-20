@@ -39,6 +39,13 @@ public sealed record SlimVectorDocument
     public DateTimeOffset UpdatedAt { get; init; }
 }
 
+public sealed record SlimVectorDocumentPage
+{
+    public required SlimVectorDocument[] Documents { get; init; }
+
+    public string? ContinuationToken { get; init; }
+}
+
 public sealed record SlimVectorDocumentUpdate
 {
     public required string Id { get; init; }
@@ -168,11 +175,6 @@ internal sealed record DocumentDelete
 {
     public required string[] Ids { get; init; }
     public bool? Atomic { get; init; }
-}
-
-internal sealed record DocumentList
-{
-    public required SlimVectorDocument[] Documents { get; init; }
 }
 
 internal sealed record DocumentCount

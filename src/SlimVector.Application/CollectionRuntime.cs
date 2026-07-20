@@ -24,6 +24,7 @@ internal sealed class CollectionRuntime : IDisposable
     private readonly double _bm25K1;
     private readonly double _bm25B;
     private readonly OperationalMetrics _metrics;
+    private readonly IDataGroupStorage? _dataGroupStorage;
     private readonly int _maximumTermsPerDocument;
     private Task _tail = Task.CompletedTask;
     private bool _evicted;
@@ -62,7 +63,8 @@ internal sealed class CollectionRuntime : IDisposable
         DiskAnnOptions? diskAnnOptions = null,
         IndexGenerationManifest? persistedManifest = null,
         byte[]? persistedPreviousVectorIndex = null,
-        OperationalMetrics? metrics = null)
+        OperationalMetrics? metrics = null,
+        IDataGroupStorage? dataGroupStorage = null)
     {
         Definition = definition;
         _documents = documents.ToDictionary(static pair => pair.Key, static pair => pair.Value.DeepCopy(), StringComparer.Ordinal);
@@ -77,6 +79,7 @@ internal sealed class CollectionRuntime : IDisposable
         _autoIndexOptions = autoIndexOptions ?? new AutoIndexOptions { HnswMinimumVectors = autoHnswThreshold };
         _diskAnnOptions = diskAnnOptions ?? new DiskAnnOptions();
         _metrics = metrics ?? new OperationalMetrics();
+        _dataGroupStorage = dataGroupStorage;
         _activeGeneration = persistedManifest?.ActiveGeneration ?? 1;
         _persistedSnapshotBytes = persistedVectorIndex?.LongLength ?? 0;
         _previousGeneration = persistedManifest?.PreviousGeneration;
@@ -138,6 +141,9 @@ internal sealed class CollectionRuntime : IDisposable
     public Task<IndexMigrationStatus> GetMigrationStatusAsync() =>
         EnqueueAsync(() => Task.FromResult(GetMigrationStatus()));
 
+    public Task EnsureIndexesPersistedAsync(CancellationToken cancellationToken) =>
+        EnqueueAsync(() => PersistVectorIndexAsync(cancellationToken));
+
     public Task<BatchMutationResult> MutateAsync(
         IReadOnlyList<DocumentMutation> mutations,
         bool atomic,
@@ -153,7 +159,27 @@ internal sealed class CollectionRuntime : IDisposable
 
     public Task<long> CountAsync() => EnqueueAsync(() => Task.FromResult((long)_documents.Count));
 
+    public Task<IReadOnlyList<DocumentRecord>> GetDocumentsDataGroupAsync(
+        string dataGroupId,
+        IReadOnlyList<string>? ids,
+        int limit) => EnqueueAsync<IReadOnlyList<DocumentRecord>>(() => Task.FromResult<IReadOnlyList<DocumentRecord>>(
+        GetDocumentsDataGroupCore(dataGroupId, ids, limit)));
+
+    public Task<long> CountDataGroupAsync(string dataGroupId) =>
+        EnqueueAsync(() => Task.FromResult((long)GetRoutingCandidates(dataGroupId).Count));
+
     public Task<SearchResponse> SearchAsync(SearchRequest request) => EnqueueAsync(() => Task.FromResult(SearchCore(request)));
+
+    public Task<SearchResponse> SearchDataGroupAsync(
+        string dataGroupId,
+        SearchRequest request,
+        Bm25CorpusStatistics? corpusStatistics) => EnqueueAsync(() => Task.FromResult(SearchCore(
+        request,
+        GetRoutingCandidates(dataGroupId),
+        corpusStatistics)));
+
+    public Task<Bm25CorpusStatistics> GetTextCorpusStatisticsAsync(string dataGroupId, string query) =>
+        EnqueueAsync(() => Task.FromResult(_index.GetTextCorpusStatistics(query, GetRoutingCandidates(dataGroupId))));
 
     public Task<bool> RollbackIndexAsync(CancellationToken cancellationToken) => EnqueueAsync(async () =>
     {
@@ -168,11 +194,6 @@ internal sealed class CollectionRuntime : IDisposable
         long currentGeneration = _activeGeneration;
         byte[] data = target.Serialize(_documents.Values);
         Volatile.Write(ref _persistedSnapshotBytes, data.LongLength);
-        await _storage.WriteDerivedDataAsync(
-            Definition.Id,
-            SearchIndexDerivedDataName,
-            data,
-            cancellationToken).ConfigureAwait(false);
         DateTimeOffset activatedAt = _timeProvider.GetUtcNow();
         IndexGenerationManifest manifest = new(
             targetGeneration,
@@ -180,11 +201,20 @@ internal sealed class CollectionRuntime : IDisposable
             target.VectorKind,
             current.VectorKind,
             activatedAt);
-        await _storage.WriteDerivedDataAsync(
-            Definition.Id,
-            SearchIndexManifestDataName,
-            IndexGenerationManifestCodec.Serialize(manifest),
-            cancellationToken).ConfigureAwait(false);
+        if (_dataGroupStorage is null)
+        {
+            await _storage.WriteDerivedDataAsync(
+                Definition.Id,
+                SearchIndexDerivedDataName,
+                data,
+                cancellationToken).ConfigureAwait(false);
+            await _storage.WriteDerivedDataAsync(
+                Definition.Id,
+                SearchIndexManifestDataName,
+                IndexGenerationManifestCodec.Serialize(manifest),
+                cancellationToken).ConfigureAwait(false);
+        }
+
         _index = target;
         _activeGeneration = targetGeneration;
         _previousIndex = current;
@@ -192,6 +222,11 @@ internal sealed class CollectionRuntime : IDisposable
         _lastMigration = activatedAt;
         _migrationState = "rolled-back";
         _migrationReason = $"Rolled back to generation {targetGeneration}.";
+        if (_dataGroupStorage is not null)
+        {
+            await PersistDataGroupIndexesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         return true;
     });
 
@@ -465,10 +500,31 @@ internal sealed class CollectionRuntime : IDisposable
         return documents.Skip(offset).Take(limit).Select(static document => document.DeepCopy()).ToArray();
     }
 
-    private SearchResponse SearchCore(SearchRequest request)
+    private DocumentRecord[] GetDocumentsDataGroupCore(
+        string dataGroupId,
+        IReadOnlyList<string>? ids,
+        int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        HashSet<string> candidates = GetRoutingCandidates(dataGroupId);
+        IEnumerable<DocumentRecord> documents = ids is not null
+            ? ids.Distinct(StringComparer.Ordinal)
+                .Where(candidates.Contains)
+                .Select(id => _documents.GetValueOrDefault(id))
+                .OfType<DocumentRecord>()
+            : candidates.Order(StringComparer.Ordinal).Select(id => _documents[id]);
+        return documents.Take(limit).Select(static document => document.DeepCopy()).ToArray();
+    }
+
+    private SearchResponse SearchCore(
+        SearchRequest request,
+        IReadOnlySet<string>? routingCandidates = null,
+        Bm25CorpusStatistics? corpusStatistics = null)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
-        IReadOnlyList<HybridRankedResult> ranked = SearchWithPlacement(request);
+        IReadOnlyList<HybridRankedResult> ranked = routingCandidates is null
+            ? SearchWithPlacement(request)
+            : _index.Search(request, _candidateMultiplier, routingCandidates, corpusStatistics);
         List<SearchHit> hits = new(ranked.Count);
         foreach (HybridRankedResult result in ranked)
         {
@@ -496,6 +552,24 @@ internal sealed class CollectionRuntime : IDisposable
             Hits = hits,
             TookMicroseconds = (long)(stopwatch.Elapsed.TotalMilliseconds * 1_000),
         };
+    }
+
+    private HashSet<string> GetRoutingCandidates(string dataGroupId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataGroupId);
+        CollectionPlacement? placement = Definition.Placement;
+        if (placement is null)
+        {
+            return _documents.Keys.ToHashSet(StringComparer.Ordinal);
+        }
+
+        return _documents.Values
+            .Where(document => string.Equals(
+                placement.Resolve(Definition.Id, document.Id).DataGroupId,
+                dataGroupId,
+                StringComparison.Ordinal))
+            .Select(static document => document.Id)
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     private IReadOnlyList<HybridRankedResult> SearchWithPlacement(SearchRequest request)
@@ -662,16 +736,6 @@ internal sealed class CollectionRuntime : IDisposable
                 long nextGeneration = checked(_activeGeneration + 1);
                 byte[] data = ownedCandidate.Serialize(_documents.Values);
                 Volatile.Write(ref _persistedSnapshotBytes, data.LongLength);
-                await _storage.WriteDerivedDataAsync(
-                    Definition.Id,
-                    GenerationDataName(nextGeneration),
-                    data,
-                    cancellationToken).ConfigureAwait(false);
-                await _storage.WriteDerivedDataAsync(
-                    Definition.Id,
-                    SearchIndexDerivedDataName,
-                    data,
-                    cancellationToken).ConfigureAwait(false);
                 DateTimeOffset activatedAt = _timeProvider.GetUtcNow();
                 IndexGenerationManifest manifest = new(
                     nextGeneration,
@@ -679,11 +743,24 @@ internal sealed class CollectionRuntime : IDisposable
                     targetKind,
                     _index.VectorKind,
                     activatedAt);
-                await _storage.WriteDerivedDataAsync(
-                    Definition.Id,
-                    SearchIndexManifestDataName,
-                    IndexGenerationManifestCodec.Serialize(manifest),
-                    cancellationToken).ConfigureAwait(false);
+                if (_dataGroupStorage is null)
+                {
+                    await _storage.WriteDerivedDataAsync(
+                        Definition.Id,
+                        GenerationDataName(nextGeneration),
+                        data,
+                        cancellationToken).ConfigureAwait(false);
+                    await _storage.WriteDerivedDataAsync(
+                        Definition.Id,
+                        SearchIndexDerivedDataName,
+                        data,
+                        cancellationToken).ConfigureAwait(false);
+                    await _storage.WriteDerivedDataAsync(
+                        Definition.Id,
+                        SearchIndexManifestDataName,
+                        IndexGenerationManifestCodec.Serialize(manifest),
+                        cancellationToken).ConfigureAwait(false);
+                }
 
                 _previousIndex?.Dispose();
                 _previousIndex = _index;
@@ -693,6 +770,11 @@ internal sealed class CollectionRuntime : IDisposable
                 candidate = null;
                 _lastMigration = activatedAt;
                 _migrationState = "active";
+                if (_dataGroupStorage is not null)
+                {
+                    await PersistDataGroupIndexesAsync(cancellationToken).ConfigureAwait(false);
+                }
+
                 _metrics.RecordIndexMigration(Stopwatch.GetElapsedTime(started), succeeded: true, validation.Recall);
                 recorded = true;
                 ResetStatistics(activatedAt);
@@ -830,6 +912,12 @@ internal sealed class CollectionRuntime : IDisposable
 
     private async Task PersistVectorIndexAsync(CancellationToken cancellationToken)
     {
+        if (_dataGroupStorage is not null)
+        {
+            await PersistDataGroupIndexesAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         byte[] data = _index.Serialize(_documents.Values);
         Volatile.Write(ref _persistedSnapshotBytes, data.LongLength);
         if (Definition.VectorIndex.Kind == VectorIndexKind.Auto)
@@ -860,6 +948,72 @@ internal sealed class CollectionRuntime : IDisposable
                 _previousIndex?.VectorKind,
                 _lastMigration == DateTimeOffset.MinValue ? _timeProvider.GetUtcNow() : _lastMigration);
             await _storage.WriteDerivedDataAsync(
+                Definition.Id,
+                SearchIndexManifestDataName,
+                IndexGenerationManifestCodec.Serialize(manifest),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PersistDataGroupIndexesAsync(CancellationToken cancellationToken)
+    {
+        if (_dataGroupStorage is null || Definition.Placement is null)
+        {
+            return;
+        }
+
+        foreach (string groupId in _dataGroupStorage.GetLocalDataGroupIds())
+        {
+            DocumentRecord[] documents = _documents.Values
+                .Where(document => string.Equals(
+                    Definition.Placement.Resolve(Definition.Id, document.Id).DataGroupId,
+                    groupId,
+                    StringComparison.Ordinal))
+                .OrderBy(static document => document.Id, StringComparer.Ordinal)
+                .ToArray();
+            if (!Definition.Placement.ReadRoutes().Any(route =>
+                    string.Equals(route.DataGroupId, groupId, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            await _dataGroupStorage.EnsureCollectionAsync(groupId, Definition, cancellationToken).ConfigureAwait(false);
+            using CollectionSearchIndex groupIndex = BuildIndex(
+                Definition,
+                documents,
+                _autoHnswThreshold,
+                persistedVectorIndex: null,
+                _bm25K1,
+                _bm25B,
+                _maximumTermsPerDocument,
+                _index.VectorKind,
+                GetDiskAnnArtifactDirectory($"{groupId}-active"));
+            byte[] groupData = groupIndex.Serialize(documents);
+            await _dataGroupStorage.WriteDerivedDataAsync(
+                groupId,
+                Definition.Id,
+                SearchIndexDerivedDataName,
+                groupData,
+                cancellationToken).ConfigureAwait(false);
+            if (Definition.VectorIndex.Kind != VectorIndexKind.Auto)
+            {
+                continue;
+            }
+
+            await _dataGroupStorage.WriteDerivedDataAsync(
+                groupId,
+                Definition.Id,
+                GenerationDataName(_activeGeneration),
+                groupData,
+                cancellationToken).ConfigureAwait(false);
+            IndexGenerationManifest manifest = new(
+                _activeGeneration,
+                _previousGeneration,
+                _index.VectorKind,
+                _previousIndex?.VectorKind,
+                _lastMigration == DateTimeOffset.MinValue ? _timeProvider.GetUtcNow() : _lastMigration);
+            await _dataGroupStorage.WriteDerivedDataAsync(
+                groupId,
                 Definition.Id,
                 SearchIndexManifestDataName,
                 IndexGenerationManifestCodec.Serialize(manifest),

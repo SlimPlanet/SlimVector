@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 namespace SlimVector.Raft;
 
-internal static class RaftGroupAssignment
+public static class RaftGroupAssignment
 {
     public static string GetDataGroupId(Guid collectionId, IReadOnlyList<string> sortedDataGroupIds)
     {

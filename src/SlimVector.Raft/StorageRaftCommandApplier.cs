@@ -9,14 +9,22 @@ namespace SlimVector.Raft;
 public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
 {
     private readonly IStorageEngine _storage;
+    private readonly IDataGroupStorage? _dataGroupStorage;
+    private readonly IClusterTopologyStore? _topologyStore;
     private readonly SemaphoreSlim _catalogLock = new(1, 1);
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _collectionLocks = new();
     private readonly string[] _dataGroupIds;
 
-    public StorageRaftCommandApplier(IStorageEngine storage, IReadOnlyList<string>? dataGroupIds = null)
+    public StorageRaftCommandApplier(
+        IStorageEngine storage,
+        IReadOnlyList<string>? dataGroupIds = null,
+        IDataGroupStorage? dataGroupStorage = null,
+        IClusterTopologyStore? topologyStore = null)
     {
         ArgumentNullException.ThrowIfNull(storage);
         _storage = storage;
+        _dataGroupStorage = dataGroupStorage;
+        _topologyStore = topologyStore;
         _dataGroupIds = (dataGroupIds ?? ["data-0"])
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
@@ -42,6 +50,10 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                 ApplyDataBatchAsync(command.DataBatch, command.GroupId, cancellationToken),
             RaftCommandKind.ShardBatch when command.ShardBatch is not null =>
                 ApplyShardBatchAsync(command.ShardBatch, command.GroupId, cancellationToken),
+            RaftCommandKind.TopologyReplace when command.TopologyReplace is not null =>
+                ApplyTopologyReplaceAsync(command.TopologyReplace, command.GroupId, cancellationToken),
+            RaftCommandKind.ShardTransfer when command.ShardTransfer is not null =>
+                ApplyDataBatchAsync(command.ShardTransfer, command.GroupId, cancellationToken, validateRoute: false),
             _ => ValueTask.FromException(new InvalidDataException("The Raft command payload is inconsistent.")),
         };
     }
@@ -70,14 +82,13 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                     await collectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        IReadOnlyDictionary<string, DocumentRecord> current = await _storage
-                            .LoadDocumentsAsync(collection.Id, cancellationToken)
+                        IReadOnlyDictionary<string, DocumentRecord> current = await LoadGroupDocumentsAsync(
+                                groupId,
+                                collection.Id,
+                                cancellationToken)
                             .ConfigureAwait(false);
                         documents = current.Values
-                            .Where(document => string.Equals(
-                                GetShardRoute(collection, document.Id).DataGroupId,
-                                groupId,
-                                StringComparison.Ordinal))
+                            .Where(document => DocumentBelongsToGroup(collection, document.Id, groupId))
                             .OrderBy(static document => document.Id, StringComparer.Ordinal)
                             .Select(RaftCommandCodec.FromDomain)
                             .ToArray();
@@ -95,10 +106,18 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                 });
             }
 
+            RaftClusterTopology? topology = null;
+            if (string.Equals(groupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal) && _topologyStore is not null)
+            {
+                topology = RaftCommandCodec.FromDomain(
+                    await _topologyStore.GetAsync(cancellationToken).ConfigureAwait(false));
+            }
+
             return MemoryPackSerializer.Serialize(new RaftApplicationSnapshot
             {
                 GroupId = groupId,
                 Collections = collections.ToArray(),
+                Topology = topology,
             });
         }
         finally
@@ -131,6 +150,13 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         if (string.Equals(groupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal))
         {
             await RestoreCatalogSnapshotAsync(definitions, cancellationToken).ConfigureAwait(false);
+            if (state.Topology is not null && _topologyStore is not null)
+            {
+                await _topologyStore.ReplaceAsync(
+                    RaftCommandCodec.ToDomain(state.Topology),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             StateChanged?.Invoke(null);
             return;
         }
@@ -143,12 +169,15 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
             }
 
             await EnsureCollectionAsync(definition, cancellationToken).ConfigureAwait(false);
+            await EnsureGroupCollectionAsync(groupId, definition, cancellationToken).ConfigureAwait(false);
             SemaphoreSlim collectionLock = _collectionLocks.GetOrAdd(definition.Id, static _ => new SemaphoreSlim(1, 1));
             await collectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                IReadOnlyDictionary<string, DocumentRecord> current = await _storage
-                    .LoadDocumentsAsync(definition.Id, cancellationToken)
+                IReadOnlyDictionary<string, DocumentRecord> current = await LoadGroupDocumentsAsync(
+                        groupId,
+                        definition.Id,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 DocumentRecord[] restored = collectionSnapshot.Documents
                     .Select(RaftCommandCodec.ToDomain)
@@ -156,14 +185,14 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
                 HashSet<string> restoredIds = restored.Select(static document => document.Id).ToHashSet(StringComparer.Ordinal);
                 StorageOperation[] replacement = [
                     .. current.Keys
-                        .Where(id => string.Equals(GetShardRoute(definition, id).DataGroupId, groupId, StringComparison.Ordinal) &&
+                        .Where(id => DocumentBelongsToGroup(definition, id, groupId) &&
                             !restoredIds.Contains(id))
                         .Select(id => StorageOperation.Delete(id, current[id].Version + 1)),
                     .. restored.Select(StorageOperation.Upsert),
                 ];
                 if (replacement.Length > 0)
                 {
-                    await _storage.AppendAsync(definition.Id, replacement, cancellationToken).ConfigureAwait(false);
+                    await AppendGroupAsync(groupId, definition.Id, replacement, cancellationToken).ConfigureAwait(false);
                 }
             }
             finally
@@ -210,6 +239,16 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
             if (existing is not null)
             {
                 await _storage.DeleteCollectionAsync(existing.Name, cancellationToken).ConfigureAwait(false);
+                if (_dataGroupStorage is not null)
+                {
+                    foreach (string groupId in _dataGroupStorage.GetLocalDataGroupIds())
+                    {
+                        await _dataGroupStorage.DeleteCollectionAsync(
+                            groupId,
+                            existing.Name,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
             }
         }
         finally
@@ -223,7 +262,8 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
     private async ValueTask ApplyDataBatchAsync(
         DataBatchCommand command,
         string groupId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool validateRoute = true)
     {
         CollectionDefinition collection = RaftCommandCodec.ToDomain(command.Collection);
         if (collection.Id != command.CollectionId)
@@ -231,7 +271,7 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
             throw new InvalidDataException("The Raft data batch collection identifiers do not match.");
         }
 
-        if (collection.Placement is not null && command.RoutingEpoch > 0)
+        if (validateRoute && collection.Placement is not null && command.RoutingEpoch > 0)
         {
             if (command.RoutingEpoch != collection.Placement.Epoch)
             {
@@ -258,12 +298,15 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         }
 
         await EnsureCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
+        await EnsureGroupCollectionAsync(groupId, collection, cancellationToken).ConfigureAwait(false);
         SemaphoreSlim collectionLock = _collectionLocks.GetOrAdd(collection.Id, static _ => new SemaphoreSlim(1, 1));
         await collectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            IReadOnlyDictionary<string, DocumentRecord> current = await _storage
-                .LoadDocumentsAsync(collection.Id, cancellationToken)
+            IReadOnlyDictionary<string, DocumentRecord> current = await LoadGroupDocumentsAsync(
+                    groupId,
+                    collection.Id,
+                    cancellationToken)
                 .ConfigureAwait(false);
             Dictionary<string, DocumentRecord> working = current.ToDictionary(
                 static pair => pair.Key,
@@ -297,7 +340,7 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
 
             if (effective.Count > 0)
             {
-                await _storage.AppendAsync(collection.Id, effective, cancellationToken).ConfigureAwait(false);
+                await AppendGroupAsync(groupId, collection.Id, effective, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -322,6 +365,27 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         {
             await ApplyDataBatchAsync(batch, groupId, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async ValueTask ApplyTopologyReplaceAsync(
+        TopologyReplaceCommand command,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(groupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Cluster topology commands must target the catalog group.");
+        }
+
+        if (_topologyStore is null)
+        {
+            throw new InvalidOperationException("No cluster topology store is configured.");
+        }
+
+        await _topologyStore.ReplaceAsync(
+            RaftCommandCodec.ToDomain(command.Topology),
+            cancellationToken).ConfigureAwait(false);
+        StateChanged?.Invoke(null);
     }
 
     private async ValueTask EnsureCollectionAsync(
@@ -394,10 +458,47 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         RaftGroupAssignment.GetDataGroupId(collectionId, _dataGroupIds);
 
     private bool CollectionBelongsToGroup(CollectionDefinition collection, string groupId) =>
-        collection.Placement?.ReadRoutes().Any(route => string.Equals(route.DataGroupId, groupId, StringComparison.Ordinal)) ??
+        collection.Placement?.Shards.Any(shard =>
+            string.Equals(shard.DataGroupId, groupId, StringComparison.Ordinal) ||
+            string.Equals(shard.TargetDataGroupId, groupId, StringComparison.Ordinal)) ??
         string.Equals(GetDataGroupId(collection.Id), groupId, StringComparison.Ordinal);
+
+    private bool DocumentBelongsToGroup(CollectionDefinition collection, string documentId, string groupId)
+    {
+        if (collection.Placement is null)
+        {
+            return string.Equals(GetDataGroupId(collection.Id), groupId, StringComparison.Ordinal);
+        }
+
+        ShardRoute route = collection.Placement.Resolve(collection.Id, documentId);
+        ShardPlacement shard = collection.Placement.Shards[route.ShardId];
+        return string.Equals(route.DataGroupId, groupId, StringComparison.Ordinal) ||
+            string.Equals(shard.TargetDataGroupId, groupId, StringComparison.Ordinal);
+    }
 
     private ShardRoute GetShardRoute(CollectionDefinition collection, string documentId) =>
         collection.Placement?.Resolve(collection.Id, documentId) ??
         new ShardRoute(0, GetDataGroupId(collection.Id), 0);
+
+    private ValueTask EnsureGroupCollectionAsync(
+        string groupId,
+        CollectionDefinition definition,
+        CancellationToken cancellationToken) => _dataGroupStorage is null
+            ? ValueTask.CompletedTask
+            : _dataGroupStorage.EnsureCollectionAsync(groupId, definition, cancellationToken);
+
+    private ValueTask<IReadOnlyDictionary<string, DocumentRecord>> LoadGroupDocumentsAsync(
+        string groupId,
+        Guid collectionId,
+        CancellationToken cancellationToken) => _dataGroupStorage is null
+            ? _storage.LoadDocumentsAsync(collectionId, cancellationToken)
+            : _dataGroupStorage.LoadDocumentsAsync(groupId, collectionId, cancellationToken);
+
+    private ValueTask AppendGroupAsync(
+        string groupId,
+        Guid collectionId,
+        IReadOnlyList<StorageOperation> operations,
+        CancellationToken cancellationToken) => _dataGroupStorage is null
+            ? _storage.AppendAsync(collectionId, operations, cancellationToken)
+            : _dataGroupStorage.AppendAsync(groupId, collectionId, operations, cancellationToken);
 }

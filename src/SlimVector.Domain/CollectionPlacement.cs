@@ -36,7 +36,7 @@ public sealed record ShardPlacement
 
 public sealed record CollectionPlacement
 {
-    public const int DefaultVirtualShardCount = 256;
+    public const int DefaultVirtualShardCount = 1_024;
 
     public long Epoch { get; init; } = 1;
 

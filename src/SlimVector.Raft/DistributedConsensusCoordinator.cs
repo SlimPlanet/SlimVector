@@ -4,7 +4,8 @@ using SlimVector.Storage;
 
 namespace SlimVector.Raft;
 
-public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, IClusterMembershipCoordinator
+public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, IClusterMembershipCoordinator, ILocalRaftGroupManager,
+    ILocalRaftCommandReplicator
 {
     private readonly MultiRaftNode _node;
     private readonly StorageRaftCommandApplier _applier;
@@ -56,6 +57,18 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
             }
         })
         .ToArray();
+
+    public IReadOnlyList<string> GetHostedDataGroupIds() => _node.DataGroupIds;
+
+    public ValueTask AddLocalDataGroupAsync(
+        RaftGroupNodeOptions options,
+        CancellationToken cancellationToken = default) =>
+        _node.AddGroupAsync(options, cancellationToken);
+
+    public ValueTask RemoveLocalDataGroupAsync(
+        string groupId,
+        CancellationToken cancellationToken = default) =>
+        _node.RemoveGroupAsync(groupId, cancellationToken);
 
     public async ValueTask AddMemberAsync(
         string groupId,
@@ -162,7 +175,9 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
 
     public ValueTask StopAsync(CancellationToken cancellationToken = default) => _node.StopAsync(cancellationToken);
 
-    public string GetDataGroupId(Guid collectionId) => _node.GetDataGroupId(collectionId);
+    public string GetDataGroupId(Guid collectionId) => _node.DataGroupIds.Count == 0
+        ? "data-0"
+        : _node.GetDataGroupId(collectionId);
 
     public CollectionPlacement CreateInitialPlacement(
         Guid collectionId,
@@ -182,7 +197,9 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
                 Guid.NewGuid(),
                 MultiRaftNode.CatalogGroupId,
                 collection,
-                GetDataGroupId(collection.Id)),
+                collection.Placement is { } placement
+                    ? placement.ReadRoutes()[0].DataGroupId
+                    : GetDataGroupId(collection.Id)),
             cancellationToken);
 
     public ValueTask DeleteCollectionAsync(CollectionDefinition collection, CancellationToken cancellationToken = default) =>
@@ -192,6 +209,13 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
                 MultiRaftNode.CatalogGroupId,
                 collection.Id,
                 collection.Name),
+            cancellationToken);
+
+    public ValueTask ReplaceTopologyAsync(
+        ClusterTopology topology,
+        CancellationToken cancellationToken = default) =>
+        _node.ReplicateCatalogAsync(
+            RaftCommandCodec.TopologyReplace(Guid.NewGuid(), MultiRaftNode.CatalogGroupId, topology),
             cancellationToken);
 
     public ValueTask AppendAsync(
@@ -248,11 +272,27 @@ public sealed class DistributedConsensusCoordinator : IConsensusCoordinator, ICl
             cancellationToken);
     }
 
+    public ValueTask ReplicateLocalAsync(
+        RaftCommandEnvelope command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        return string.Equals(command.GroupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal)
+            ? _node.ReplicateCatalogAsync(command, cancellationToken)
+            : _node.ReplicateDataGroupAsync(command.GroupId, command, cancellationToken);
+    }
+
     public ValueTask ApplyReadBarrierAsync(
         Guid? collectionId,
         ReadConsistency consistency,
         CancellationToken cancellationToken = default) =>
         _node.ApplyReadBarrierAsync(collectionId, consistency, cancellationToken);
+
+    public ValueTask ApplyDataGroupReadBarrierAsync(
+        string dataGroupId,
+        ReadConsistency consistency,
+        CancellationToken cancellationToken = default) =>
+        _node.ApplyReadBarriersAsync([dataGroupId], consistency, cancellationToken);
 
     public ValueTask ApplyReadBarriersAsync(
         CollectionDefinition collection,

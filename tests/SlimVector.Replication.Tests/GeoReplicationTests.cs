@@ -56,6 +56,10 @@ public sealed class GeoReplicationTests
             await WaitUntilAsync(
                 () => SecondaryHasDocumentAsync(secondaryNode.Storage, collection, cancellationToken),
                 cancellationToken);
+            await WaitUntilAsync(
+                () => service.GetMetrics() is { PendingEvents: 0, SentEvents: 2 } &&
+                    receiver.GetMetrics().ReceivedEvents == 2,
+                cancellationToken);
             Assert.Equal(0, service.GetMetrics().PendingEvents);
             Assert.Equal(2, service.GetMetrics().SentEvents);
             Assert.Equal(2, receiver.GetMetrics().ReceivedEvents);

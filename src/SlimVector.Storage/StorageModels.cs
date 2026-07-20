@@ -2,6 +2,11 @@ using SlimVector.Domain;
 
 namespace SlimVector.Storage;
 
+internal sealed record DistributedStorageFormat
+{
+    public int FormatVersion { get; init; } = 2;
+}
+
 internal sealed record CatalogFile
 {
     public int FormatVersion { get; init; } = 1;

@@ -22,7 +22,7 @@ Creation requires `name` and `dimension`; `metric` defaults to `cosine`, and vec
 | `POST` | `/collections/{name}/documents/add` | Insert new ids |
 | `POST` | `/collections/{name}/documents/upsert` | Insert or replace |
 | `PATCH` | `/collections/{name}/documents` | Patch text, vector, and/or metadata |
-| `GET` | `/collections/{name}/documents` | Page documents; repeat `ids=` to select ids |
+| `GET` | `/collections/{name}/documents` | Page documents; repeat `ids=` to select ids; returns `continuationToken` |
 | `POST` | `/collections/{name}/documents/delete` | Delete ids |
 | `GET` | `/collections/{name}/documents/count` | Count documents |
 | `POST` | `/collections/{name}/documents/query` | Search |
@@ -46,6 +46,8 @@ Add and upsert accept a natural grouped envelope:
 With `atomic=true` (the default), one invalid item rejects the entire request and nothing is persisted. With `atomic=false`, valid items commit and the response reports stable `errorCode`/`errorMessage` values for failed items. Admission control returns 429 with `Retry-After`, `X-SlimVector-RateLimit-Kind` (`contractual` or `congestion`), and `X-SlimVector-RateLimit-Scope`. Queue saturation remains `queue_saturated`; a payload over the configured adaptive-batch byte limit returns `400 write_too_large`.
 
 Metadata values support null, string, boolean, integral and floating-point numbers, RFC-compatible date/time values, GUIDs, and simple arrays. JSON numbers without a fractional part are stored as integral values.
+
+Distributed pagination should pass the opaque `continuationToken` returned by the previous page. It is bound to the collection and placement epoch, so a topology cutover invalidates it rather than returning duplicates or omissions. `offset` remains available for compatibility but is capped by `Api:MaximumDocumentOffset` (10,000 by default).
 
 ## Query
 
@@ -77,7 +79,7 @@ Filter operators are `equal`, `notEqual`, `greaterThan`, `greaterThanOrEqual`, `
 
 Errors are RFC Problem Details with `code` and `traceId` extensions. Common stable codes include `collection_not_found`, `document_not_found`, `dimension_mismatch`, `invalid_filter`, `text_too_large`, `queue_saturated`, `request_too_large`, `not_leader`, `quorum_unavailable`, `membership_conflict`, `membership_member_not_found`, and `read_only_secondary`.
 
-A cluster follower returns `307 Temporary Redirect` for a leader-only write when the leader's API address is known. Clients must preserve method and body when following it; the provided .NET client uses `HttpClient`, which supports 307 redirects by default.
+Any API node accepts data operations. It resolves document → virtual shard → data group and forwards writes to that group's leader over the authenticated HTTP/2/MemoryPack internal API. A stale placement epoch is rejected and rerouted. Legacy expert membership operations can still return `307 Temporary Redirect` when they must execute on a particular Raft leader.
 
 ## Backup administration
 
@@ -107,6 +109,12 @@ These routes use the same administrator key:
 | `POST` | `/admin/cluster/membership/demote` | Stage a serialized safe removal |
 | `POST` | `/admin/cluster/membership/remove` | Consensus-remove after safety checks |
 | `POST` | `/admin/cluster/membership/transfer-leadership` | Resign the local group leader before maintenance |
+| `GET` | `/admin/cluster/nodes/topology` | Nodes, zones, capacities, data-group replica sets, epochs and durable movements |
+| `POST` | `/admin/cluster/nodes/join` | Register an API/data node without moving data |
+| `POST` | `/admin/cluster/nodes/{nodeId}/drain` | Stop new placement on a node and mark it for evacuation |
+| `DELETE` | `/admin/cluster/nodes/{nodeId}` | Remove an already evacuated node |
+| `GET` | `/admin/cluster/nodes/rebalance/plan` | Estimate replica sets, reasons, bytes and utilization before/after |
+| `POST` | `/admin/cluster/nodes/rebalance/approve` | Persist and start an approved replica movement plan |
 | `GET` | `/admin/cluster/rebalance/plan?drainDataGroupId=data-0` | Build a read-only placement plan |
 | `POST` | `/admin/cluster/rebalance/approve` | Approve a plan by `planId` |
 | `GET` | `/admin/cluster/rebalance/status` | List durable in-flight shard moves |

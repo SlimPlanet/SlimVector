@@ -13,4 +13,6 @@ namespace SlimVector.Storage;
 [JsonSerializable(typeof(CollectionDefinition))]
 [JsonSerializable(typeof(DocumentRecord))]
 [JsonSerializable(typeof(StorageOperation))]
+[JsonSerializable(typeof(DistributedStorageFormat))]
+[JsonSerializable(typeof(ClusterTopology))]
 internal sealed partial class StorageJsonContext : JsonSerializerContext;

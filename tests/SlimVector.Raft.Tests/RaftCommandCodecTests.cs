@@ -103,6 +103,76 @@ public sealed class RaftCommandCodecTests
         Assert.Equal(16, restored.Placement.Shards.Length);
     }
 
+    [Fact]
+    public void DistributedTopologyRoundTripsCatalogVotersAndDurableReplicaMove()
+    {
+        DateTimeOffset now = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
+        ClusterNodeDescriptor[] nodes = Enumerable.Range(1, 4).Select(index => new ClusterNodeDescriptor
+        {
+            NodeId = $"node-{index}",
+            ApiEndpoint = $"https://node-{index}:8080",
+            InternalEndpoint = $"https://node-{index}:8080",
+            RaftHost = $"10.0.0.{index}",
+            Zone = $"zone-{index}",
+            CapacityBytes = 1_000_000,
+            RaftPortStart = 4_000,
+            RaftPortCount = 16,
+            State = ClusterNodeState.Active,
+            LastSeenAt = now,
+        }).ToArray();
+        Guid operationId = Guid.NewGuid();
+        Guid planId = Guid.NewGuid();
+        ClusterTopology topology = new()
+        {
+            Epoch = 9,
+            Nodes = nodes,
+            CatalogNodeIds = ["node-1", "node-2", "node-3"],
+            DataGroups =
+            [
+                new DataGroupDescriptor
+                {
+                    GroupId = "data-0",
+                    ReplicationFactor = 3,
+                    EstimatedBytes = 42_000,
+                    State = DataGroupState.Relocating,
+                    Replicas = nodes.Take(3).Select((node, index) => new DataGroupReplica
+                    {
+                        NodeId = node.NodeId,
+                        RaftEndpoint = $"http://{node.RaftHost}:{4_000 + index}",
+                    }).ToArray(),
+                },
+            ],
+            ReplicaMoves =
+            [
+                new ReplicaMoveDescriptor
+                {
+                    OperationId = operationId,
+                    PlanId = planId,
+                    GroupId = "data-0",
+                    SourceNodeId = "node-1",
+                    TargetNodeId = "node-4",
+                    TargetRaftEndpoint = "http://10.0.0.4:4003",
+                    EstimatedBytes = 42_000,
+                    State = ReplicaMoveState.CatchingUp,
+                    UpdatedAt = now,
+                },
+            ],
+        };
+
+        RaftCommandEnvelope command = RaftCommandCodec.TopologyReplace(
+            Guid.NewGuid(),
+            MultiRaftNode.CatalogGroupId,
+            topology);
+        ClusterTopology restored = RaftCommandCodec.ToDomain(
+            RaftCommandCodec.Deserialize(RaftCommandCodec.Serialize(command)).TopologyReplace!.Topology);
+
+        Assert.Equal(topology.CatalogNodeIds, restored.CatalogNodeIds);
+        ReplicaMoveDescriptor move = Assert.Single(restored.ReplicaMoves);
+        Assert.Equal(operationId, move.OperationId);
+        Assert.Equal(ReplicaMoveState.CatchingUp, move.State);
+        Assert.Equal("node-4", move.TargetNodeId);
+    }
+
     private static DocumentRecord Document(Dictionary<string, MetadataValue> metadata, DateTimeOffset timestamp) => new()
     {
         Id = "document-1",

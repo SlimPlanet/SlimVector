@@ -87,6 +87,150 @@ public static class RaftCommandCodec
             ShardBatch = new ShardBatchCommand { Batches = writes.Select(FromWrite).ToArray() },
         };
 
+    public static RaftCommandEnvelope TopologyReplace(
+        Guid commandId,
+        string groupId,
+        ClusterTopology topology) => new()
+        {
+            CommandId = commandId,
+            GroupId = groupId,
+            Kind = RaftCommandKind.TopologyReplace,
+            TopologyReplace = new TopologyReplaceCommand { Topology = FromDomain(topology) },
+        };
+
+    public static RaftCommandEnvelope ShardTransfer(
+        Guid commandId,
+        string groupId,
+        CollectionDefinition collection,
+        IReadOnlyList<StorageOperation> operations,
+        int shardId) => new()
+        {
+            CommandId = commandId,
+            GroupId = groupId,
+            Kind = RaftCommandKind.ShardTransfer,
+            ShardTransfer = new DataBatchCommand
+            {
+                CollectionId = collection.Id,
+                Collection = FromDomain(collection),
+                Operations = operations.Select(FromStorage).ToArray(),
+                ShardId = shardId,
+                RoutingEpoch = collection.Placement?.Epoch ?? 0,
+            },
+        };
+
+    public static RaftClusterTopology FromDomain(ClusterTopology topology)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
+        topology.Validate();
+        return new RaftClusterTopology
+        {
+            FormatVersion = topology.FormatVersion,
+            Epoch = topology.Epoch,
+            CatalogNodeIds = topology.CatalogNodeIds,
+            Nodes = topology.Nodes.Select(static node => new RaftClusterNode
+            {
+                NodeId = node.NodeId,
+                ApiEndpoint = node.ApiEndpoint,
+                InternalEndpoint = node.InternalEndpoint,
+                RaftHost = node.RaftHost,
+                Zone = node.Zone,
+                CapacityBytes = node.CapacityBytes,
+                UsedBytes = node.UsedBytes,
+                AssignedBytes = node.AssignedBytes,
+                RaftPortStart = node.RaftPortStart,
+                RaftPortCount = node.RaftPortCount,
+                State = node.State,
+                LastSeenAt = node.LastSeenAt,
+                Roles = node.Roles,
+            }).ToArray(),
+            DataGroups = topology.DataGroups.Select(static group => new RaftDataGroup
+            {
+                GroupId = group.GroupId,
+                Generation = group.Generation,
+                ReplicationFactor = group.ReplicationFactor,
+                EstimatedBytes = group.EstimatedBytes,
+                State = group.State,
+                Replicas = group.Replicas.Select(static replica => new RaftDataGroupReplica
+                {
+                    NodeId = replica.NodeId,
+                    RaftEndpoint = replica.RaftEndpoint,
+                    ObservedReplicationLag = replica.ObservedReplicationLag,
+                    Healthy = replica.Healthy,
+                }).ToArray(),
+            }).ToArray(),
+            ReplicaMoves = topology.ReplicaMoves.Select(static move => new RaftReplicaMove
+            {
+                OperationId = move.OperationId,
+                PlanId = move.PlanId,
+                GroupId = move.GroupId,
+                SourceNodeId = move.SourceNodeId,
+                TargetNodeId = move.TargetNodeId,
+                TargetRaftEndpoint = move.TargetRaftEndpoint,
+                EstimatedBytes = move.EstimatedBytes,
+                State = move.State,
+                LastError = move.LastError,
+                UpdatedAt = move.UpdatedAt,
+            }).ToArray(),
+        };
+    }
+
+    public static ClusterTopology ToDomain(RaftClusterTopology topology)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
+        ClusterTopology result = new()
+        {
+            FormatVersion = topology.FormatVersion,
+            Epoch = topology.Epoch,
+            CatalogNodeIds = topology.CatalogNodeIds,
+            Nodes = topology.Nodes.Select(static node => new ClusterNodeDescriptor
+            {
+                NodeId = node.NodeId,
+                ApiEndpoint = node.ApiEndpoint,
+                InternalEndpoint = node.InternalEndpoint,
+                RaftHost = node.RaftHost,
+                Zone = node.Zone,
+                CapacityBytes = node.CapacityBytes,
+                UsedBytes = node.UsedBytes,
+                AssignedBytes = node.AssignedBytes,
+                RaftPortStart = node.RaftPortStart,
+                RaftPortCount = node.RaftPortCount,
+                State = node.State,
+                LastSeenAt = node.LastSeenAt,
+                Roles = node.Roles,
+            }).ToArray(),
+            DataGroups = topology.DataGroups.Select(static group => new DataGroupDescriptor
+            {
+                GroupId = group.GroupId,
+                Generation = group.Generation,
+                ReplicationFactor = group.ReplicationFactor,
+                EstimatedBytes = group.EstimatedBytes,
+                State = group.State,
+                Replicas = group.Replicas.Select(static replica => new DataGroupReplica
+                {
+                    NodeId = replica.NodeId,
+                    RaftEndpoint = replica.RaftEndpoint,
+                    ObservedReplicationLag = replica.ObservedReplicationLag,
+                    Healthy = replica.Healthy,
+                }).ToArray(),
+            }).ToArray(),
+            ReplicaMoves = topology.ReplicaMoves.Select(static move => new ReplicaMoveDescriptor
+            {
+                OperationId = move.OperationId,
+                PlanId = move.PlanId,
+                GroupId = move.GroupId,
+                SourceNodeId = move.SourceNodeId,
+                TargetNodeId = move.TargetNodeId,
+                TargetRaftEndpoint = move.TargetRaftEndpoint,
+                EstimatedBytes = move.EstimatedBytes,
+                State = move.State,
+                LastError = move.LastError,
+                UpdatedAt = move.UpdatedAt,
+            }).ToArray(),
+        };
+        result.Validate();
+        return result;
+    }
+
     public static CollectionDefinition ToDomain(RaftCollectionDefinition collection)
     {
         ArgumentNullException.ThrowIfNull(collection);
@@ -262,7 +406,7 @@ public static class RaftCommandCodec
         return result;
     }
 
-    private static RaftMetadataValue FromDomain(MetadataValue value) => new()
+    public static RaftMetadataValue FromDomain(MetadataValue value) => new()
     {
         Kind = value.Kind,
         StringValue = value.StringValue,
@@ -277,7 +421,7 @@ public static class RaftCommandCodec
         NumberArrayValue = value.NumberArrayValue,
     };
 
-    private static MetadataValue ToDomain(RaftMetadataValue value) => new()
+    public static MetadataValue ToDomain(RaftMetadataValue value) => new()
     {
         Kind = value.Kind,
         StringValue = value.StringValue,
@@ -315,13 +459,17 @@ public static class RaftCommandCodec
         int payloadCount = (command.CatalogUpsert is null ? 0 : 1) +
             (command.CatalogDelete is null ? 0 : 1) +
             (command.DataBatch is null ? 0 : 1) +
-            (command.ShardBatch is null ? 0 : 1);
+            (command.ShardBatch is null ? 0 : 1) +
+            (command.TopologyReplace is null ? 0 : 1) +
+            (command.ShardTransfer is null ? 0 : 1);
         bool payloadMatchesKind = command.Kind switch
         {
             RaftCommandKind.CatalogUpsert => command.CatalogUpsert is not null,
             RaftCommandKind.CatalogDelete => command.CatalogDelete is not null,
             RaftCommandKind.DataBatch => command.DataBatch is not null,
             RaftCommandKind.ShardBatch => command.ShardBatch is { Batches.Length: > 0 },
+            RaftCommandKind.TopologyReplace => command.TopologyReplace is not null,
+            RaftCommandKind.ShardTransfer => command.ShardTransfer is not null,
             _ => false,
         };
         if (payloadCount != 1 || !payloadMatchesKind)

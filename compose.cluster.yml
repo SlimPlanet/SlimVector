@@ -6,9 +6,24 @@ x-cluster-environment: &cluster-environment
   Raft__Members__0: http://172.28.0.11:3262
   Raft__Members__1: http://172.28.0.12:3262
   Raft__Members__2: http://172.28.0.13:3262
-  Raft__MemberApiEndpoints__0: http://localhost:8081
-  Raft__MemberApiEndpoints__1: http://localhost:8082
-  Raft__MemberApiEndpoints__2: http://localhost:8083
+  Raft__MemberApiEndpoints__0: http://172.28.0.11:8080
+  Raft__MemberApiEndpoints__1: http://172.28.0.12:8080
+  Raft__MemberApiEndpoints__2: http://172.28.0.13:8080
+  Raft__MemberNodeIds__0: node-1
+  Raft__MemberNodeIds__1: node-2
+  Raft__MemberNodeIds__2: node-3
+  Raft__MemberInternalEndpoints__0: http://172.28.0.11:8080
+  Raft__MemberInternalEndpoints__1: http://172.28.0.12:8080
+  Raft__MemberInternalEndpoints__2: http://172.28.0.13:8080
+  Raft__MemberZones__0: zone-a
+  Raft__MemberZones__1: zone-b
+  Raft__MemberZones__2: zone-c
+  Raft__MemberCapacityBytes__0: "1099511627776"
+  Raft__MemberCapacityBytes__1: "1099511627776"
+  Raft__MemberCapacityBytes__2: "1099511627776"
+  Raft__DataPortRangeStart: "3263"
+  Raft__DataPortRangeCount: "128"
+  Raft__CapacityBytes: "1099511627776"
   Api__AdminEndpointsEnabled: "true"
   Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
 
@@ -29,6 +44,8 @@ services:
       Raft__NodeId: node-1
       Raft__PublicEndpoint: http://172.28.0.11:3262
       Raft__PublicApiEndpoint: http://localhost:8081
+      Raft__InternalEndpoint: http://172.28.0.11:8080
+      Raft__Zone: zone-a
 
   node-2:
     build:
@@ -41,6 +58,8 @@ services:
       Raft__NodeId: node-2
       Raft__PublicEndpoint: http://172.28.0.12:3262
       Raft__PublicApiEndpoint: http://localhost:8082
+      Raft__InternalEndpoint: http://172.28.0.12:8080
+      Raft__Zone: zone-b
     volumes:
       - node-2-data:/data
     networks:
@@ -58,6 +77,8 @@ services:
       Raft__NodeId: node-3
       Raft__PublicEndpoint: http://172.28.0.13:3262
       Raft__PublicApiEndpoint: http://localhost:8083
+      Raft__InternalEndpoint: http://172.28.0.13:8080
+      Raft__Zone: zone-c
     volumes:
       - node-3-data:/data
     networks:
@@ -78,8 +99,13 @@ services:
       Raft__NodeId: node-4
       Raft__PublicEndpoint: http://172.28.0.14:3262
       Raft__PublicApiEndpoint: http://localhost:8084
+      Raft__InternalEndpoint: http://172.28.0.14:8080
+      Raft__Zone: zone-a
       Raft__JoinExistingCluster: "true"
       Raft__DataGroupCount: "2"
+      Raft__DataPortRangeStart: "3263"
+      Raft__DataPortRangeCount: "128"
+      Raft__CapacityBytes: "1099511627776"
       Api__AdminEndpointsEnabled: "true"
       Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
     volumes:
@@ -88,11 +114,71 @@ services:
       slimvector-cluster:
         ipv4_address: 172.28.0.14
 
+  node-5-joiner:
+    profiles: ["joiner"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8080"
+    environment:
+      Storage__Path: /data
+      Storage__FlushToDisk: "true"
+      Raft__Mode: Cluster
+      Raft__NodeId: node-5
+      Raft__PublicEndpoint: http://172.28.0.15:3262
+      Raft__PublicApiEndpoint: http://localhost:8085
+      Raft__InternalEndpoint: http://172.28.0.15:8080
+      Raft__Zone: zone-b
+      Raft__JoinExistingCluster: "true"
+      Raft__DataGroupCount: "2"
+      Raft__DataPortRangeStart: "3263"
+      Raft__DataPortRangeCount: "128"
+      Raft__CapacityBytes: "1099511627776"
+      Api__AdminEndpointsEnabled: "true"
+      Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
+    volumes:
+      - node-5-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.15
+
+  node-6-joiner:
+    profiles: ["joiner"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8086:8080"
+    environment:
+      Storage__Path: /data
+      Storage__FlushToDisk: "true"
+      Raft__Mode: Cluster
+      Raft__NodeId: node-6
+      Raft__PublicEndpoint: http://172.28.0.16:3262
+      Raft__PublicApiEndpoint: http://localhost:8086
+      Raft__InternalEndpoint: http://172.28.0.16:8080
+      Raft__Zone: zone-c
+      Raft__JoinExistingCluster: "true"
+      Raft__DataGroupCount: "2"
+      Raft__DataPortRangeStart: "3263"
+      Raft__DataPortRangeCount: "128"
+      Raft__CapacityBytes: "1099511627776"
+      Api__AdminEndpointsEnabled: "true"
+      Api__AdminApiKey: ${SLIMVECTOR_ADMIN_KEY:-slimvector-compose-admin-key-000001}
+    volumes:
+      - node-6-data:/data
+    networks:
+      slimvector-cluster:
+        ipv4_address: 172.28.0.16
+
 volumes:
   node-1-data:
   node-2-data:
   node-3-data:
   node-4-data:
+  node-5-data:
+  node-6-data:
 
 networks:
   slimvector-cluster:

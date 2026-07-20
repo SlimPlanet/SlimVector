@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using MemoryPack;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +19,69 @@ namespace SlimVector.Api.Tests;
 
 public sealed class SlimVectorApiTests
 {
+    [Fact]
+    public async Task DocumentPaginationReturnsAnOpaqueContinuationToken()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string dataPath = Path.Combine(Path.GetTempPath(), "SlimVector.Api.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using WebApplicationFactory<Program> factory = CreateFactory(dataPath);
+            using HttpClient client = factory.CreateClient();
+            using HttpResponseMessage create = await client.PostAsJsonAsync(
+                "/api/v1/collections",
+                new CreateCollectionRequest { Name = "pages", Dimension = 2 },
+                ApiJsonContext.Default.CreateCollectionRequest,
+                cancellationToken);
+            create.EnsureSuccessStatusCode();
+            using HttpResponseMessage add = await client.PostAsJsonAsync(
+                "/api/v1/collections/pages/documents/add",
+                new DocumentBatchRequest
+                {
+                    Documents = Enumerable.Range(0, 5).Select(index => new DocumentInput
+                    {
+                        Id = $"doc-{index}",
+                        Text = "page",
+                        Vector = [index, 1],
+                    }).ToArray(),
+                },
+                ApiJsonContext.Default.DocumentBatchRequest,
+                cancellationToken);
+            add.EnsureSuccessStatusCode();
+
+            using HttpResponseMessage firstResponse = await client.GetAsync(
+                "/api/v1/collections/pages/documents?offset=0&limit=2",
+                cancellationToken);
+            string firstBody = await firstResponse.Content.ReadAsStringAsync(cancellationToken);
+            Assert.True(firstResponse.IsSuccessStatusCode, firstBody);
+            DocumentListResponse? first = JsonSerializer.Deserialize(
+                firstBody,
+                ApiJsonContext.Default.DocumentListResponse);
+            Assert.NotNull(first);
+            Assert.Equal(["doc-0", "doc-1"], first.Documents.Select(static document => document.Id));
+            Assert.False(string.IsNullOrWhiteSpace(first.ContinuationToken));
+
+            DocumentListResponse? second = await client.GetFromJsonAsync(
+                $"/api/v1/collections/pages/documents?limit=2&continuationToken={Uri.EscapeDataString(first.ContinuationToken)}",
+                ApiJsonContext.Default.DocumentListResponse,
+                cancellationToken);
+            Assert.NotNull(second);
+            Assert.Equal(["doc-2", "doc-3"], second.Documents.Select(static document => document.Id));
+
+            using HttpResponseMessage invalid = await client.GetAsync(
+                "/api/v1/collections/pages/documents?limit=2&continuationToken=invalid",
+                cancellationToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath))
+            {
+                Directory.Delete(dataPath, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public async Task ApiSupportsCollectionDocumentsAndHybridQuery()
     {

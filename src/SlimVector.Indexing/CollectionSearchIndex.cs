@@ -174,7 +174,8 @@ public sealed class CollectionSearchIndex : IDisposable
     public IReadOnlyList<HybridRankedResult> Search(
         SearchRequest request,
         int candidateMultiplier,
-        IReadOnlySet<string>? routingCandidates = null)
+        IReadOnlySet<string>? routingCandidates = null,
+        Bm25CorpusStatistics? corpusStatistics = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         IReadOnlySet<string>? candidates = IntersectCandidates(
@@ -187,12 +188,12 @@ public sealed class CollectionSearchIndex : IDisposable
             SearchMode.Vector => _vector.Search(request.Vector!, request.Limit, candidates)
                 .Select(static (result, index) => new HybridRankedResult(result.Id, -result.Score, index + 1, null))
                 .ToArray(),
-            SearchMode.Text => _text.Search(request.Text!, request.Limit, candidates)
+            SearchMode.Text => _text.Search(request.Text!, request.Limit, candidates, corpusStatistics)
                 .Select(static (result, index) => new HybridRankedResult(result.Id, result.Score, null, index + 1))
                 .ToArray(),
             SearchMode.Hybrid => RankFusion.WeightedReciprocalRank(
                 _vector.Search(request.Vector!, candidateLimit, candidates),
-                _text.Search(request.Text!, candidateLimit, candidates),
+                _text.Search(request.Text!, candidateLimit, candidates, corpusStatistics),
                 request.VectorWeight,
                 request.TextWeight,
                 request.Limit),
@@ -203,6 +204,11 @@ public sealed class CollectionSearchIndex : IDisposable
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Mode, "Unknown search mode."),
         };
     }
+
+    public Bm25CorpusStatistics GetTextCorpusStatistics(
+        string query,
+        IReadOnlySet<string>? routingCandidates = null) =>
+        _text.GetCorpusStatistics(query, routingCandidates);
 
     private static IReadOnlySet<string>? IntersectCandidates(
         IReadOnlySet<string>? metadataCandidates,

@@ -73,3 +73,10 @@ public sealed record BatchMutationResult
 
     public required IReadOnlyList<DocumentMutationResult> Results { get; init; }
 }
+
+public sealed record DocumentPage
+{
+    public required IReadOnlyList<DocumentRecord> Documents { get; init; }
+
+    public string? ContinuationToken { get; init; }
+}
