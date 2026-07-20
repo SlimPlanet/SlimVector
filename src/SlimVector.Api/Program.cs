@@ -346,11 +346,7 @@ static Task WriteTimeoutProblemAsync(HttpContext context)
     };
     problem.Extensions["code"] = "request_timeout";
     problem.Extensions["traceId"] = context.TraceIdentifier;
-    return context.Response.WriteAsJsonAsync(
-        problem,
-        ApiJsonContext.Default.ProblemDetails,
-        contentType: "application/problem+json",
-        CancellationToken.None);
+    return ApiSerialization.WriteProblemAsync(context, problem, CancellationToken.None);
 }
 
 public partial class Program;

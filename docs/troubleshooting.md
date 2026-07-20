@@ -44,4 +44,4 @@ For filesystem backup, verify independent-volume capacity and permissions. For S
 
 ## Native AOT publish
 
-Publish with an explicit RID and `--self-contained true`. Only the two aggregate MemoryPack warnings documented in ADR 0001 are scoped as non-errors. Any detailed SlimVector trim/AOT warning is a regression and should be fixed, not suppressed.
+Publish with an explicit RID and `--self-contained true`. Only the aggregate serializer warnings documented in ADR 0001 are scoped as non-errors. Any detailed SlimVector trim/AOT warning is a regression and should be fixed, not suppressed.

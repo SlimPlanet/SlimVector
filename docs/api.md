@@ -1,6 +1,17 @@
 # HTTP API
 
-The default prefix is `/api/v1`; `Api:RoutePrefix` can change it. JSON uses camel case and string enums. OpenAPI is available at `/openapi/v1.json`.
+The default prefix is `/api/v1`; `Api:RoutePrefix` can change it. JSON remains the default and uses camel case and string enums. Collection and document endpoints also accept and return cross-language MessagePack with `Content-Type: application/vnd.msgpack` and `Accept: application/vnd.msgpack`. OpenAPI advertises both media types at `/openapi/v1.json`; administration endpoints remain JSON control-plane APIs.
+
+MessagePack bodies use maps with the same camel-case field names as JSON. Enums and `DateTimeOffset` values remain human-portable strings, vectors use native float arrays, and arbitrary metadata maps MessagePack nil/bool/integer/float/string/array/map values to the existing JSON data model. The decoder uses the untrusted-data security profile and generated contracts only: typeless payloads and runtime contract discovery are not enabled.
+
+The typed .NET client selects the format once while keeping JSON as its compatible default:
+
+```csharp
+SlimVectorClient json = new(http);
+SlimVectorClient binary = new(http, SlimVectorWireFormat.MessagePack);
+```
+
+Request and response formats are negotiated independently. For example, a JSON request with `Accept: application/vnd.msgpack` receives a MessagePack response. Error responses use the selected representation too; the MessagePack form carries the same stable Problem Details fields and error `code`.
 
 ## Collections
 
@@ -45,7 +56,7 @@ Add and upsert accept a natural grouped envelope:
 
 With `atomic=true` (the default), one invalid item rejects the entire request and nothing is persisted. With `atomic=false`, valid items commit and the response reports stable `errorCode`/`errorMessage` values for failed items. Admission control returns 429 with `Retry-After`, `X-SlimVector-RateLimit-Kind` (`contractual` or `congestion`), and `X-SlimVector-RateLimit-Scope`. Queue saturation remains `queue_saturated`; a payload over the configured adaptive-batch byte limit returns `400 write_too_large`.
 
-Metadata values support null, string, boolean, integral and floating-point numbers, RFC-compatible date/time values, GUIDs, and simple arrays. JSON numbers without a fractional part are stored as integral values.
+Metadata values support null, string, boolean, integral and floating-point numbers, RFC-compatible date/time values, GUIDs, and simple arrays. JSON numbers without a fractional part are stored as integral values. MessagePack integer and floating-point tokens preserve the same distinction.
 
 Distributed pagination should pass the opaque `continuationToken` returned by the previous page. It is bound to the collection and placement epoch, so a topology cutover invalidates it rather than returning duplicates or omissions. `offset` remains available for compatibility but is capped by `Api:MaximumDocumentOffset` (10,000 by default).
 

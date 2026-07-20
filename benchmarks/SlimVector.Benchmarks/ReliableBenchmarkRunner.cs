@@ -63,6 +63,7 @@ internal static class ReliableBenchmarkRunner
         ReliableIndexScenario[] scenarios = FilterScenarios(CreateScenarios(profile), requestedIndexes);
         BenchmarkStorageMode[] storageModes = ParseStorageModes(GetArgument(args, "--storage-mode") ??
             (profile.Name == "Large" ? "durable" : "both"));
+        BenchmarkWireFormat[] wireFormats = ParseWireFormats(GetArgument(args, "--wire-format") ?? "json");
         string outputRoot = Path.GetFullPath(GetArgument(args, "--output") ?? "artifacts/benchmarks");
         Directory.CreateDirectory(outputRoot);
         BenchmarkEnvironmentV5 environment = CaptureEnvironment(profile, dataset, scenarios, storageModes, recallThresholds, outputRoot);
@@ -104,10 +105,14 @@ internal static class ReliableBenchmarkRunner
                 {
                     foreach (BenchmarkStorageMode storageMode in storageModes)
                     {
-                        serverStage.Add(new BenchmarkJobTemplate(
-                            saturationProfile ? BenchmarkJobKind.Saturation : BenchmarkJobKind.ServerCrud,
-                            scenario,
-                            storageMode));
+                        foreach (BenchmarkWireFormat wireFormat in wireFormats)
+                        {
+                            serverStage.Add(new BenchmarkJobTemplate(
+                                saturationProfile ? BenchmarkJobKind.Saturation : BenchmarkJobKind.ServerCrud,
+                                scenario,
+                                storageMode,
+                                wireFormat));
+                        }
                     }
                 }
 
@@ -121,7 +126,8 @@ internal static class ReliableBenchmarkRunner
                             Kind = VectorIndexKind.Flat,
                             Quantization = VectorQuantizationKind.Float32,
                         },
-                        storageMode));
+                        storageMode,
+                        BenchmarkWireFormat.Json));
                 }
 
                 await RunStageAsync(serverStage, profile, dataset, workspace, iterations).ConfigureAwait(false);
@@ -285,7 +291,7 @@ internal static class ReliableBenchmarkRunner
                 string scenarioName = template.Scenario?.Name ?? template.Kind.ToString();
                 string workerPath = Path.Combine(
                     workspace,
-                    $"{(warmup ? "warmup" : "iteration")}-{Math.Abs(iteration)}-{ordinal}-{Sanitize(scenarioName)}-{template.StorageMode}");
+                    $"{(warmup ? "warmup" : "iteration")}-{Math.Abs(iteration)}-{ordinal}-{Sanitize(scenarioName)}-{template.StorageMode}-{template.WireFormat}");
                 BenchmarkWorkerJob job = new()
                 {
                     Kind = template.Kind,
@@ -293,6 +299,7 @@ internal static class ReliableBenchmarkRunner
                     Scenario = template.Scenario,
                     Dataset = dataset,
                     StorageMode = template.StorageMode ?? BenchmarkStorageMode.Buffered,
+                    WireFormat = template.WireFormat,
                     Iteration = iteration,
                     Warmup = warmup,
                     Workspace = workerPath,
@@ -327,9 +334,9 @@ internal static class ReliableBenchmarkRunner
     {
         string scenario = template.Kind switch
         {
-            BenchmarkJobKind.ServerCrud => $"Server-{template.Scenario!.Name}-{template.StorageMode}",
+            BenchmarkJobKind.ServerCrud => $"Server-{template.Scenario!.Name}-{template.StorageMode}{WireFormatSuffix(template.WireFormat)}",
             BenchmarkJobKind.ServerControl => $"Server-Control-{template.StorageMode}",
-            BenchmarkJobKind.Saturation => $"Server-Saturation-{template.Scenario!.Name}-{template.StorageMode}",
+            BenchmarkJobKind.Saturation => $"Server-Saturation-{template.Scenario!.Name}-{template.StorageMode}{WireFormatSuffix(template.WireFormat)}",
             BenchmarkJobKind.Migration => "AutoMigration-FlatToHnsw",
             BenchmarkJobKind.Raft => "Raft-Add-CatchUp",
             _ => template.Scenario?.Name ?? template.Kind.ToString(),
@@ -656,6 +663,14 @@ internal static class ReliableBenchmarkRunner
         _ => throw new ArgumentException("--storage-mode must be buffered, durable, or both.", nameof(value)),
     };
 
+    internal static BenchmarkWireFormat[] ParseWireFormats(string value) => value.ToLowerInvariant() switch
+    {
+        "json" => [BenchmarkWireFormat.Json],
+        "messagepack" or "msgpack" => [BenchmarkWireFormat.MessagePack],
+        "both" => [BenchmarkWireFormat.Json, BenchmarkWireFormat.MessagePack],
+        _ => throw new ArgumentException("--wire-format must be json, messagepack, or both.", nameof(value)),
+    };
+
     internal static double[] ParseRecallThresholds(string value)
     {
         double[] thresholds = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -722,6 +737,9 @@ internal static class ReliableBenchmarkRunner
     private static string Sanitize(string value) => new(value.Select(static character =>
         char.IsAsciiLetterOrDigit(character) || character is '.' or '-' or '_' ? character : '_').ToArray());
 
+    internal static string WireFormatSuffix(BenchmarkWireFormat wireFormat) =>
+        wireFormat == BenchmarkWireFormat.MessagePack ? "-MessagePack" : string.Empty;
+
     private static string GetCpuModel()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
@@ -769,5 +787,6 @@ internal static class ReliableBenchmarkRunner
     private sealed record BenchmarkJobTemplate(
         BenchmarkJobKind Kind,
         ReliableIndexScenario? Scenario,
-        BenchmarkStorageMode? StorageMode);
+        BenchmarkStorageMode? StorageMode,
+        BenchmarkWireFormat WireFormat = BenchmarkWireFormat.Json);
 }

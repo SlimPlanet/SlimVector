@@ -8,8 +8,10 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using MessagePack;
 using SlimVector.Domain;
 using SlimVector.Indexing;
+using SlimVector.Protocol;
 using SlimVector.Raft;
 using SlimVector.Raft.Commands;
 
@@ -1921,76 +1923,111 @@ internal sealed record PressureProbeResult(
     public int TotalRejections => QueueSaturationRejections + CongestionRejections;
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerCreateCollectionRequest
 {
+    [Key("name")]
     public required string Name { get; init; }
 
+    [Key("dimension")]
     public int Dimension { get; init; }
 
+    [Key("metric")]
+    [MessagePackFormatter(typeof(DistanceMetricMessagePackFormatter))]
     public DistanceMetric Metric { get; init; }
 
+    [Key("vectorIndex")]
+    [MessagePackFormatter(typeof(VectorIndexConfigurationMessagePackFormatter))]
     public required VectorIndexConfiguration VectorIndex { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerDocumentInput
 {
+    [Key("id")]
     public required string Id { get; init; }
 
+    [Key("text")]
     public required string Text { get; init; }
 
+    [Key("vector")]
     public required float[] Vector { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerDocumentBatchRequest
 {
+    [Key("documents")]
     public required ServerDocumentInput[] Documents { get; init; }
 
+    [Key("atomic")]
     public bool Atomic { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerDocumentUpdateInput
 {
+    [Key("id")]
     public required string Id { get; init; }
 
+    [Key("text")]
     public string? Text { get; init; }
 
+    [Key("vector")]
     public float[]? Vector { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerDocumentUpdateBatchRequest
 {
+    [Key("documents")]
     public required ServerDocumentUpdateInput[] Documents { get; init; }
 
+    [Key("atomic")]
     public bool Atomic { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerDocumentDeleteRequest
 {
+    [Key("ids")]
     public required string[] Ids { get; init; }
 
+    [Key("atomic")]
     public bool Atomic { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerQueryRequest
 {
+    [Key("text")]
     public string? Text { get; init; }
 
+    [Key("vector")]
     public float[]? Vector { get; init; }
 
+    [Key("mode")]
+    [MessagePackFormatter(typeof(SearchModeMessagePackFormatter))]
     public SearchMode Mode { get; init; }
 
+    [Key("limit")]
     public int Limit { get; init; }
 
+    [Key("include")]
     public required string[] Include { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerQueryResponse
 {
+    [Key("hits")]
     public required ServerQueryHit[] Hits { get; init; }
 }
 
+[MessagePackObject(AllowPrivate = true)]
 internal sealed record ServerQueryHit
 {
+    [Key("id")]
     public required string Id { get; init; }
 }
 

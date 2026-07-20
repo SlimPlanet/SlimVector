@@ -1,17 +1,17 @@
-# ADR 0001: MemoryPack Native AOT aggregate warnings
+# ADR 0001: Binary serializers' Native AOT aggregate warnings
 
 - Status: accepted
 - Date: 2026-07-18
 
 ## Context
 
-SlimVector uses MemoryPack's source generator for versioned internal binary data. MemoryPack 1.21.4 describes its generated path as Native AOT friendly, but `MemoryPack.Core` also ships generic runtime formatter fallback paths. The .NET 10 Native AOT analyzer examines those unused paths and emits aggregate `IL2104` and `IL3053` warnings for that assembly.
+SlimVector uses MemoryPack's source generator for versioned internal binary data and MessagePack's source generator for the optional public binary wire format. Both packages also ship generic runtime formatter fallback paths. The .NET 10 Native AOT analyzer examines those unused paths and emits aggregate `IL2104` and `IL3053` warnings for their assemblies.
 
-SlimVector calls only generic serializers for `[MemoryPackable]` types whose formatters are generated at compile time. Native AOT smoke tests exercise those calls.
+SlimVector calls MemoryPack only for `[MemoryPackable]` types and MessagePack only for `[MessagePackObject]` types registered in generated resolvers. Public MessagePack decoding uses `UntrustedData`; typeless and contractless resolvers are not enabled. Native AOT smoke tests exercise both paths.
 
 ## Decision
 
-Keep trim and AOT analysis enabled and warnings-as-errors for the solution. In the API publish project only, do not promote the two aggregate MemoryPack assembly warnings (`IL2104` and `IL3053`) to errors. Do not suppress detailed SlimVector linker warnings.
+Keep trim and AOT analysis enabled and warnings-as-errors for the solution. In the API publish project only, do not promote the aggregate serializer assembly warnings (`IL2104` and `IL3053`) to errors. Do not suppress detailed SlimVector linker warnings.
 
 Revisit this exception on every MemoryPack upgrade and remove it once the package annotations no longer produce the aggregate warnings.
 

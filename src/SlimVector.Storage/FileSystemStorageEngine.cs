@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using MemoryPack;
 using SlimVector.Domain;
 
 namespace SlimVector.Storage;
@@ -531,7 +532,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
 
     private async ValueTask<SegmentDescriptor> WriteSegmentAsync(SegmentPayload payload, CancellationToken cancellationToken)
     {
-        byte[] body = JsonSerializer.SerializeToUtf8Bytes(payload, StorageJsonContext.Default.SegmentPayload);
+        byte[] body = MemoryPackSegmentCodec.Serialize(payload);
         string checksum = Convert.ToHexStringLower(SHA256.HashData(body));
         string fileName = $"{payload.Sequence:D20}.segment";
         string path = Path.Combine(GetSegmentsPath(payload.CollectionId), fileName);
@@ -579,9 +580,20 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             throw Corruption($"Checksum verification failed for segment '{path}'.");
         }
 
-        SegmentPayload payload = JsonSerializer.Deserialize(body, StorageJsonContext.Default.SegmentPayload)
-            ?? throw Corruption($"Segment '{path}' has no payload.");
-        if (payload.FormatVersion != 1 || payload.CollectionId != expectedCollectionId)
+        SegmentPayload payload;
+        try
+        {
+            payload = MemoryPackSegmentCodec.IsMemoryPack(body)
+                ? MemoryPackSegmentCodec.Deserialize(body)
+                : JsonSerializer.Deserialize(body, StorageJsonContext.Default.SegmentPayload)
+                    ?? throw Corruption($"Segment '{path}' has no payload.");
+        }
+        catch (Exception exception) when (exception is MemoryPackSerializationException or InvalidDataException or JsonException)
+        {
+            throw Corruption($"Segment '{path}' payload is invalid: {exception.Message}");
+        }
+
+        if (payload.FormatVersion is not 1 and not 2 || payload.CollectionId != expectedCollectionId)
         {
             throw Corruption($"Segment '{path}' has an unsupported format or collection id.");
         }

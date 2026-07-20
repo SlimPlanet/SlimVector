@@ -98,10 +98,7 @@ internal sealed partial class ApiExceptionHandler : IExceptionHandler
             httpContext.Response.Headers.Location = location.Uri.AbsoluteUri;
         }
 
-        httpContext.Response.StatusCode = status;
-        await httpContext.Response
-            .WriteAsJsonAsync(problem, ApiJsonContext.Default.ProblemDetails, contentType: null, cancellationToken)
-            .ConfigureAwait(false);
+        await ApiSerialization.WriteProblemAsync(httpContext, problem, cancellationToken).ConfigureAwait(false);
         return true;
     }
 

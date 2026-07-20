@@ -83,6 +83,8 @@ SlimVectorQueryResult result = await client.QueryAsync("articles", new SlimVecto
 });
 ```
 
+JSON is the default public wire format. For vector-heavy client traffic, construct the same typed client with `new SlimVectorClient(http, SlimVectorWireFormat.MessagePack)`; collection/document endpoints and Problem Details then use `application/vnd.msgpack` without changing DTOs.
+
 ## Quality gates
 
 ```bash
@@ -92,7 +94,7 @@ dotnet test SlimVector.slnx -c Release
 dotnet publish src/SlimVector.Api/SlimVector.Api.csproj -c Release -r linux-x64 --self-contained true
 ```
 
-The API project publishes with Native AOT and `TrimMode=full`. The narrowly scoped MemoryPack aggregate-warning policy is explained in [ADR 0001](docs/adr/0001-memorypack-native-aot-warnings.md).
+The API project publishes with Native AOT and `TrimMode=full`. The narrowly scoped generated-serializer aggregate-warning policy is explained in [ADR 0001](docs/adr/0001-memorypack-native-aot-warnings.md).
 
 ## Documentation
 

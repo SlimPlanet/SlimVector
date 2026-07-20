@@ -45,6 +45,9 @@ public sealed class ReliableBenchmarkTests
         Assert.Equal(5, smoke.Repetitions);
         Assert.Equal(1, smoke.Warmups);
         Assert.Equal([BenchmarkStorageMode.Buffered, BenchmarkStorageMode.Durable], ReliableBenchmarkRunner.ParseStorageModes("both"));
+        Assert.Equal([BenchmarkWireFormat.Json, BenchmarkWireFormat.MessagePack], ReliableBenchmarkRunner.ParseWireFormats("both"));
+        Assert.Equal([BenchmarkWireFormat.MessagePack], ReliableBenchmarkRunner.ParseWireFormats("msgpack"));
+        Assert.Throws<ArgumentException>(() => ReliableBenchmarkRunner.ParseWireFormats("xml"));
         Assert.Equal([0.90, 0.95, 0.99], ReliableBenchmarkRunner.ParseRecallThresholds(".99,.90,.95"));
         Assert.Throws<ArgumentException>(() => ReliableBenchmarkRunner.ParseRecallThresholds("0"));
         ReliableBenchmarkProfile saturation = ReliableBenchmarkRunner.ParseProfile("Saturation");

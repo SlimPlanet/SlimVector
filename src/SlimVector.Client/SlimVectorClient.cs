@@ -1,14 +1,16 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using MessagePack;
 
 namespace SlimVector.Client;
 
 public sealed class SlimVectorClient
 {
     private readonly HttpClient _httpClient;
+    private readonly SlimVectorWireFormat _wireFormat;
 
-    public SlimVectorClient(HttpClient httpClient)
+    public SlimVectorClient(HttpClient httpClient, SlimVectorWireFormat wireFormat = SlimVectorWireFormat.Json)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         if (httpClient.BaseAddress is null)
@@ -17,6 +19,7 @@ public sealed class SlimVectorClient
         }
 
         _httpClient = httpClient;
+        _wireFormat = wireFormat;
     }
 
     public Task<CollectionInfo> CreateCollectionAsync(CreateCollectionRequest request, CancellationToken cancellationToken = default) =>
@@ -43,8 +46,12 @@ public sealed class SlimVectorClient
     public async Task DeleteCollectionAsync(string name, CancellationToken cancellationToken = default)
     {
         using HttpRequestMessage request = new(HttpMethod.Delete, CollectionPath(name));
+        AddMessagePackAccept(request, useMessagePack: _wireFormat == SlimVectorWireFormat.MessagePack);
         using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(
+            response,
+            cancellationToken,
+            useMessagePack: _wireFormat == SlimVectorWireFormat.MessagePack).ConfigureAwait(false);
     }
 
     public Task<BatchResult> AddDocumentsAsync(
@@ -282,8 +289,13 @@ public sealed class SlimVectorClient
         CancellationToken cancellationToken)
     {
         using HttpRequestMessage request = new(HttpMethod.Get, path);
+        AddMessagePackAccept(request, useMessagePack: _wireFormat == SlimVectorWireFormat.MessagePack);
         using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        return await ReadResponseAsync(response, responseType, cancellationToken).ConfigureAwait(false);
+        return await ReadResponseAsync(
+            response,
+            responseType,
+            cancellationToken,
+            useMessagePack: _wireFormat == SlimVectorWireFormat.MessagePack).ConfigureAwait(false);
     }
 
     private async Task<TResponse> SendAsync<TRequest, TResponse>(
@@ -294,25 +306,49 @@ public sealed class SlimVectorClient
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TResponse> responseType,
         CancellationToken cancellationToken)
     {
-        using HttpRequestMessage request = new(method, path)
+        bool useMessagePack = _wireFormat == SlimVectorWireFormat.MessagePack;
+        using HttpRequestMessage request = new(method, path);
+        if (useMessagePack)
         {
-            Content = JsonContent.Create(body, requestType),
-        };
+            byte[] payload = MessagePackSerializer.Serialize(body, ClientMessagePack.Options, cancellationToken);
+            request.Content = new ByteArrayContent(payload);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(ClientMessagePack.MediaType);
+            AddMessagePackAccept(request, useMessagePack: true);
+        }
+        else
+        {
+            request.Content = JsonContent.Create(body, requestType);
+        }
+
         using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        return await ReadResponseAsync(response, responseType, cancellationToken).ConfigureAwait(false);
+        return await ReadResponseAsync(response, responseType, cancellationToken, useMessagePack).ConfigureAwait(false);
     }
 
     private static async Task<TResponse> ReadResponseAsync<TResponse>(
         HttpResponseMessage response,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TResponse> responseType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool useMessagePack = false)
     {
-        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken, useMessagePack).ConfigureAwait(false);
+        if (useMessagePack && IsMessagePack(response.Content.Headers.ContentType?.MediaType))
+        {
+            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            return await MessagePackSerializer.DeserializeAsync<TResponse>(
+                    stream,
+                    ClientMessagePack.Options,
+                    cancellationToken).ConfigureAwait(false)
+                ?? throw new SlimVectorClientException(response.StatusCode, "empty_response", "SlimVector returned an empty response.");
+        }
+
         return await response.Content.ReadFromJsonAsync(responseType, cancellationToken).ConfigureAwait(false)
             ?? throw new SlimVectorClientException(response.StatusCode, "empty_response", "SlimVector returned an empty response.");
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static async Task EnsureSuccessAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken,
+        bool useMessagePack = false)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -322,9 +358,20 @@ public sealed class SlimVectorClient
         ApiProblem? problem = null;
         try
         {
-            problem = await response.Content.ReadFromJsonAsync(ClientJsonContext.Default.ApiProblem, cancellationToken).ConfigureAwait(false);
+            if (useMessagePack && IsMessagePack(response.Content.Headers.ContentType?.MediaType))
+            {
+                await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                problem = await MessagePackSerializer.DeserializeAsync<ApiProblem>(
+                    stream,
+                    ClientMessagePack.Options,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                problem = await response.Content.ReadFromJsonAsync(ClientJsonContext.Default.ApiProblem, cancellationToken).ConfigureAwait(false);
+            }
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or MessagePackSerializationException)
         {
             // Preserve the HTTP status when a proxy returned a non-JSON response.
         }
@@ -334,6 +381,17 @@ public sealed class SlimVectorClient
             problem?.Code,
             problem?.Detail ?? problem?.Title ?? $"SlimVector returned HTTP {(int)response.StatusCode}.");
     }
+
+    private static void AddMessagePackAccept(HttpRequestMessage request, bool useMessagePack)
+    {
+        if (useMessagePack)
+        {
+            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue(ClientMessagePack.MediaType));
+        }
+    }
+
+    private static bool IsMessagePack(string? mediaType) =>
+        string.Equals(mediaType, ClientMessagePack.MediaType, StringComparison.OrdinalIgnoreCase);
 
     private static string CollectionPath(string name) => $"api/v1/collections/{Uri.EscapeDataString(name)}";
 

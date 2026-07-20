@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Durable segmented storage for SlimVector.</Description>
+    <Description>Cross-language MessagePack wire-format support for SlimVector clients and APIs.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
-    <PackageReference Include="MemoryPack" />
+    <PackageReference Include="MessagePack" />
   </ItemGroup>
 </Project>

@@ -4,6 +4,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <ProjectReference Include="../SlimVector.Protocol/SlimVector.Protocol.csproj" />
+    <PackageReference Include="MessagePack" />
     <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
 </Project>

@@ -5,6 +5,7 @@
     <Project Path="src/SlimVector.Client/SlimVector.Client.csproj" />
     <Project Path="src/SlimVector.Domain/SlimVector.Domain.csproj" />
     <Project Path="src/SlimVector.Indexing/SlimVector.Indexing.csproj" />
+    <Project Path="src/SlimVector.Protocol/SlimVector.Protocol.csproj" />
     <Project Path="src/SlimVector.Raft/SlimVector.Raft.csproj" />
     <Project Path="src/SlimVector.Replication/SlimVector.Replication.csproj" />
     <Project Path="src/SlimVector.Storage/SlimVector.Storage.csproj" />

@@ -18,79 +18,114 @@ internal static class ApiEndpoints
         api.WithRequestTimeout(RequestTimeoutPolicyName);
 
         RouteGroupBuilder collections = api.MapGroup("/collections").WithTags("Collections");
-        collections.MapPost("/", CreateCollectionAsync).WithName("CreateCollection").Produces<CollectionResponse>(StatusCodes.Status201Created);
-        collections.MapPost("/get-or-create", GetOrCreateCollectionAsync).WithName("GetOrCreateCollection").Produces<CollectionResponse>();
-        collections.MapGet("/", ListCollectionsAsync).WithName("ListCollections").Produces<CollectionListResponse>();
-        collections.MapGet("/{name}", GetCollectionAsync).WithName("GetCollection").Produces<CollectionResponse>();
-        collections.MapPatch("/{name}", UpdateCollectionAsync).WithName("UpdateCollection").Produces<CollectionResponse>();
+        collections.MapPost("/", CreateCollectionAsync)
+            .WithName("CreateCollection")
+            .Accepts<CreateCollectionRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<CollectionResponse>(StatusCodes.Status201Created, "application/json", ApiSerialization.MessagePackMediaType);
+        collections.MapPost("/get-or-create", GetOrCreateCollectionAsync)
+            .WithName("GetOrCreateCollection")
+            .Accepts<CreateCollectionRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<CollectionResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        collections.MapGet("/", ListCollectionsAsync)
+            .WithName("ListCollections")
+            .Produces<CollectionListResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        collections.MapGet("/{name}", GetCollectionAsync)
+            .WithName("GetCollection")
+            .Produces<CollectionResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        collections.MapPatch("/{name}", UpdateCollectionAsync)
+            .WithName("UpdateCollection")
+            .Accepts<UpdateCollectionRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<CollectionResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
         collections.MapDelete("/{name}", DeleteCollectionAsync).WithName("DeleteCollection").Produces(StatusCodes.Status204NoContent);
 
         RouteGroupBuilder documents = collections.MapGroup("/{name}/documents").WithTags("Documents");
-        documents.MapPost("/add", AddDocumentsAsync).WithName("AddDocuments").Produces<BatchMutationResponse>();
-        documents.MapPost("/upsert", UpsertDocumentsAsync).WithName("UpsertDocuments").Produces<BatchMutationResponse>();
-        documents.MapPatch("/", UpdateDocumentsAsync).WithName("UpdateDocuments").Produces<BatchMutationResponse>();
-        documents.MapGet("/", GetDocumentsAsync).WithName("GetDocuments").Produces<DocumentListResponse>();
-        documents.MapPost("/delete", DeleteDocumentsAsync).WithName("DeleteDocuments").Produces<BatchMutationResponse>();
-        documents.MapGet("/count", CountDocumentsAsync).WithName("CountDocuments").Produces<CountResponse>();
-        documents.MapPost("/query", QueryAsync).WithName("QueryDocuments").Produces<QueryResponse>();
+        documents.MapPost("/add", AddDocumentsAsync)
+            .WithName("AddDocuments")
+            .Accepts<DocumentBatchRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<BatchMutationResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapPost("/upsert", UpsertDocumentsAsync)
+            .WithName("UpsertDocuments")
+            .Accepts<DocumentBatchRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<BatchMutationResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapPatch("/", UpdateDocumentsAsync)
+            .WithName("UpdateDocuments")
+            .Accepts<DocumentUpdateBatchRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<BatchMutationResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapGet("/", GetDocumentsAsync)
+            .WithName("GetDocuments")
+            .Produces<DocumentListResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapPost("/delete", DeleteDocumentsAsync)
+            .WithName("DeleteDocuments")
+            .Accepts<DocumentDeleteRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<BatchMutationResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapGet("/count", CountDocumentsAsync)
+            .WithName("CountDocuments")
+            .Produces<CountResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
+        documents.MapPost("/query", QueryAsync)
+            .WithName("QueryDocuments")
+            .Accepts<QueryRequest>("application/json", ApiSerialization.MessagePackMediaType)
+            .Produces<QueryResponse>(StatusCodes.Status200OK, "application/json", ApiSerialization.MessagePackMediaType);
         return endpoints;
     }
 
     private static async Task<IResult> CreateCollectionAsync(
-        CreateCollectionRequest request,
+        NegotiatedBody<CreateCollectionRequest> body,
         ISlimVectorDatabase database,
         IOptions<ApiOptions> options,
         CancellationToken cancellationToken)
     {
+        CreateCollectionRequest request = body.Value;
         CollectionDefinition definition = await database.CreateCollectionAsync(
             request.Name,
             request.Dimension,
             request.Metric ?? DistanceMetric.Cosine,
             request.VectorIndex,
             cancellationToken).ConfigureAwait(false);
-        return TypedResults.Created(
+        return ApiSerialization.Created(
             $"{options.Value.RoutePrefix}/collections/{Uri.EscapeDataString(definition.Name)}",
             ContractMapper.ToResponse(definition));
     }
 
     private static async Task<IResult> GetOrCreateCollectionAsync(
-        CreateCollectionRequest request,
+        NegotiatedBody<CreateCollectionRequest> body,
         ISlimVectorDatabase database,
         CancellationToken cancellationToken)
     {
+        CreateCollectionRequest request = body.Value;
         CollectionDefinition definition = await database.GetOrCreateCollectionAsync(
             request.Name,
             request.Dimension,
             request.Metric ?? DistanceMetric.Cosine,
             request.VectorIndex,
             cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(definition));
     }
 
     private static async Task<IResult> ListCollectionsAsync(ISlimVectorDatabase database, CancellationToken cancellationToken)
     {
         IReadOnlyList<CollectionDefinition> definitions = await database.ListCollectionsAsync(cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(new CollectionListResponse { Collections = definitions.Select(ContractMapper.ToResponse).ToArray() });
+        return ApiSerialization.Ok(new CollectionListResponse { Collections = definitions.Select(ContractMapper.ToResponse).ToArray() });
     }
 
     private static async Task<IResult> GetCollectionAsync(string name, ISlimVectorDatabase database, CancellationToken cancellationToken)
     {
         CollectionDefinition definition = await database.GetCollectionAsync(name, cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(definition));
     }
 
     private static async Task<IResult> UpdateCollectionAsync(
         string name,
-        UpdateCollectionRequest request,
+        NegotiatedBody<UpdateCollectionRequest> body,
         ISlimVectorDatabase database,
         CancellationToken cancellationToken)
     {
+        UpdateCollectionRequest request = body.Value;
         CollectionDefinition definition = await database.UpdateCollectionAsync(
             name,
             request.Name,
             request.VectorIndex,
             cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(definition));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(definition));
     }
 
     private static async Task<IResult> DeleteCollectionAsync(string name, ISlimVectorDatabase database, CancellationToken cancellationToken)
@@ -101,30 +136,31 @@ internal static class ApiEndpoints
 
     private static Task<IResult> AddDocumentsAsync(
         string name,
-        DocumentBatchRequest request,
+        NegotiatedBody<DocumentBatchRequest> body,
         ISlimVectorDatabase database,
         IOptions<ApiOptions> options,
         HttpContext httpContext,
         CancellationToken cancellationToken) =>
-        MutateDocumentsAsync(name, request, DocumentMutationKind.Add, database, options.Value, httpContext, cancellationToken);
+        MutateDocumentsAsync(name, body.Value, DocumentMutationKind.Add, database, options.Value, httpContext, cancellationToken);
 
     private static Task<IResult> UpsertDocumentsAsync(
         string name,
-        DocumentBatchRequest request,
+        NegotiatedBody<DocumentBatchRequest> body,
         ISlimVectorDatabase database,
         IOptions<ApiOptions> options,
         HttpContext httpContext,
         CancellationToken cancellationToken) =>
-        MutateDocumentsAsync(name, request, DocumentMutationKind.Upsert, database, options.Value, httpContext, cancellationToken);
+        MutateDocumentsAsync(name, body.Value, DocumentMutationKind.Upsert, database, options.Value, httpContext, cancellationToken);
 
     private static async Task<IResult> UpdateDocumentsAsync(
         string name,
-        DocumentUpdateBatchRequest request,
+        NegotiatedBody<DocumentUpdateBatchRequest> body,
         ISlimVectorDatabase database,
         IOptions<ApiOptions> options,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
+        DocumentUpdateBatchRequest request = body.Value;
         ValidateBatch(request.Documents.Length, options.Value.MaximumBatchSize);
         DocumentMutation[] mutations = request.Documents.Select(static document => new DocumentMutation
         {
@@ -135,7 +171,7 @@ internal static class ApiEndpoints
         BatchMutationResult result = await database
             .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(result));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(result));
     }
 
     private static async Task<IResult> GetDocumentsAsync(
@@ -160,7 +196,7 @@ internal static class ApiEndpoints
         DocumentPage page = await database
             .GetDocumentPageAsync(name, ids, effectiveOffset, effectiveLimit, continuationToken, cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Ok(new DocumentListResponse
+        return ApiSerialization.Ok(new DocumentListResponse
         {
             Documents = page.Documents.Select(ContractMapper.ToResponse).ToArray(),
             ContinuationToken = page.ContinuationToken,
@@ -169,12 +205,13 @@ internal static class ApiEndpoints
 
     private static async Task<IResult> DeleteDocumentsAsync(
         string name,
-        DocumentDeleteRequest request,
+        NegotiatedBody<DocumentDeleteRequest> body,
         ISlimVectorDatabase database,
         IOptions<ApiOptions> options,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
+        DocumentDeleteRequest request = body.Value;
         ValidateBatch(request.Ids.Length, options.Value.MaximumBatchSize);
         DocumentMutation[] mutations = request.Ids.Select(static id => new DocumentMutation
         {
@@ -184,7 +221,7 @@ internal static class ApiEndpoints
         BatchMutationResult result = await database
             .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(result));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(result));
     }
 
     private static async Task<IResult> CountDocumentsAsync(
@@ -193,17 +230,18 @@ internal static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         long count = await database.CountDocumentsAsync(name, cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(new CountResponse { Count = count });
+        return ApiSerialization.Ok(new CountResponse { Count = count });
     }
 
     private static async Task<IResult> QueryAsync(
         string name,
-        QueryRequest request,
+        NegotiatedBody<QueryRequest> body,
         ISlimVectorDatabase database,
         CancellationToken cancellationToken)
     {
+        QueryRequest request = body.Value;
         SearchResponse response = await database.SearchAsync(name, ContractMapper.ToSearchRequest(request), cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(response));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(response));
     }
 
     private static async Task<IResult> MutateDocumentsAsync(
@@ -225,7 +263,7 @@ internal static class ApiEndpoints
         BatchMutationResult result = await database
             .MutateAsync(name, mutations, request.Atomic ?? true, GetClientId(httpContext), cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Ok(ContractMapper.ToResponse(result));
+        return ApiSerialization.Ok(ContractMapper.ToResponse(result));
     }
 
     private static void ValidateBatch(int count, int maximum)

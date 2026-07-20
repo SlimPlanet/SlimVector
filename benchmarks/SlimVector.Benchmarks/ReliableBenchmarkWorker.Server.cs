@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
+using MessagePack;
 using SlimVector.Domain;
 
 namespace SlimVector.Benchmarks;
@@ -53,21 +54,35 @@ internal static partial class ReliableBenchmarkWorker
                 operations.Add(startup.Complete(runtimeAfter: await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false)));
             }
 
-            await CreateServerCollectionAsync(client, job.Profile, scenario, server, storagePath, operations).ConfigureAwait(false);
+            await CreateServerCollectionAsync(
+                client,
+                job.Profile,
+                scenario,
+                server,
+                storagePath,
+                operations,
+                job.WireFormat).ConfigureAwait(false);
             DocumentRecord[] documents = dataset.Documents[..Math.Min(job.Profile.ServerDocumentCount, dataset.Documents.Length)];
             if (saturationOnly)
             {
-                await InsertServerDocumentsAsync(client, documents, server, storagePath, operations: null).ConfigureAwait(false);
+                await InsertServerDocumentsAsync(
+                    client,
+                    documents,
+                    server,
+                    storagePath,
+                    operations: null,
+                    wireFormat: job.WireFormat).ConfigureAwait(false);
                 SaturationResult saturation = await RunServerSaturationAsync(
                     client,
                     server,
                     storagePath,
                     dataset.Queries,
-                    job.Profile).ConfigureAwait(false);
+                    job.Profile,
+                    job.WireFormat).ConfigureAwait(false);
                 operations.AddRange(saturation.Operations);
                 return new BenchmarkIterationResult
                 {
-                    Scenario = $"Server-Saturation-{scenario.Name}-{job.StorageMode}",
+                    Scenario = $"Server-Saturation-{scenario.Name}-{job.StorageMode}{ReliableBenchmarkRunner.WireFormatSuffix(job.WireFormat)}",
                     IndexKind = scenario.Kind.ToString(),
                     Quantization = scenario.Quantization.ToString(),
                     SearchTuning = scenario.SearchTuning,
@@ -91,15 +106,27 @@ internal static partial class ReliableBenchmarkWorker
 
             if (controlsOnly)
             {
-                await InsertServerDocumentsAsync(client, documents[..1], server, storagePath, operations: null).ConfigureAwait(false);
-                await CreatePressureCollectionsAsync(client, job.Profile, scenario, count: 8).ConfigureAwait(false);
+                await InsertServerDocumentsAsync(
+                    client,
+                    documents[..1],
+                    server,
+                    storagePath,
+                    operations: null,
+                    wireFormat: job.WireFormat).ConfigureAwait(false);
+                await CreatePressureCollectionsAsync(
+                    client,
+                    job.Profile,
+                    scenario,
+                    count: 8,
+                    wireFormat: job.WireFormat).ConfigureAwait(false);
                 ServerControlResult controls = await RunServerControlsAsync(
                     client,
                     server,
                     storagePath,
                     documents,
                     dataset.Queries[0],
-                    job.Profile.TopK).ConfigureAwait(false);
+                    job.Profile.TopK,
+                    job.WireFormat).ConfigureAwait(false);
                 operations.AddRange(controls.Operations);
                 return new BenchmarkIterationResult
                 {
@@ -119,22 +146,33 @@ internal static partial class ReliableBenchmarkWorker
                 };
             }
 
-            await InsertServerDocumentsAsync(client, documents, server, storagePath, operations).ConfigureAwait(false);
+            await InsertServerDocumentsAsync(client, documents, server, storagePath, operations, job.WireFormat).ConfigureAwait(false);
             (OperationIterationResult select, double recall) = await SelectServerDocumentsAsync(
                 client,
                 dataset,
                 documents,
                 server,
                 storagePath,
-                job.Profile.TopK).ConfigureAwait(false);
+                job.Profile.TopK,
+                job.WireFormat).ConfigureAwait(false);
             operations.Add(select);
             int mutationCount = Math.Min(job.Profile.OperationCount, documents.Length);
             DocumentRecord[] mutations = documents[..mutationCount];
-            operations.Add(await UpdateServerDocumentsAsync(client, mutations, server, storagePath).ConfigureAwait(false));
-            operations.Add(await DeleteServerDocumentsAsync(client, mutations, server, storagePath).ConfigureAwait(false));
+            operations.Add(await UpdateServerDocumentsAsync(
+                client,
+                mutations,
+                server,
+                storagePath,
+                job.WireFormat).ConfigureAwait(false));
+            operations.Add(await DeleteServerDocumentsAsync(
+                client,
+                mutations,
+                server,
+                storagePath,
+                job.WireFormat).ConfigureAwait(false));
             return new BenchmarkIterationResult
             {
-                Scenario = $"Server-{scenario.Name}-{job.StorageMode}",
+                Scenario = $"Server-{scenario.Name}-{job.StorageMode}{ReliableBenchmarkRunner.WireFormatSuffix(job.WireFormat)}",
                 IndexKind = scenario.Kind.ToString(),
                 Quantization = scenario.Quantization.ToString(),
                 SearchTuning = scenario.SearchTuning,
@@ -178,7 +216,8 @@ internal static partial class ReliableBenchmarkWorker
         HttpClient client,
         ReliableBenchmarkProfile profile,
         ReliableIndexScenario scenario,
-        int count)
+        int count,
+        BenchmarkWireFormat wireFormat)
     {
         for (int index = 0; index < count; index++)
         {
@@ -189,11 +228,12 @@ internal static partial class ReliableBenchmarkWorker
                 Metric = DistanceMetric.Cosine,
                 VectorIndex = Definition(profile, scenario).VectorIndex,
             };
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/",
                 request,
-                BenchmarkJsonContext.Default.ServerCreateCollectionRequest).ConfigureAwait(false);
+                BenchmarkJsonContext.Default.ServerCreateCollectionRequest,
+                wireFormat).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
         }
     }
@@ -204,7 +244,8 @@ internal static partial class ReliableBenchmarkWorker
         ReliableIndexScenario scenario,
         Process server,
         string storagePath,
-        List<OperationIterationResult> operations)
+        List<OperationIterationResult> operations,
+        BenchmarkWireFormat wireFormat)
     {
         ServerCreateCollectionRequest request = new()
         {
@@ -222,11 +263,12 @@ internal static partial class ReliableBenchmarkWorker
             artifactPath: storagePath,
             runtimeBefore: before);
         long started = Stopwatch.GetTimestamp();
-        using HttpResponseMessage response = await PostJsonAsync(
+        using HttpResponseMessage response = await PostPayloadAsync(
             client,
             "/api/v1/collections/",
             request,
-            BenchmarkJsonContext.Default.ServerCreateCollectionRequest).ConfigureAwait(false);
+            BenchmarkJsonContext.Default.ServerCreateCollectionRequest,
+            wireFormat).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
         RuntimeMetricsSnapshot after = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         operations.Add(measurement.Complete([Stopwatch.GetElapsedTime(started).TotalMilliseconds], runtimeAfter: after));
@@ -237,7 +279,8 @@ internal static partial class ReliableBenchmarkWorker
         DocumentRecord[] documents,
         Process server,
         string storagePath,
-        List<OperationIterationResult>? operations)
+        List<OperationIterationResult>? operations,
+        BenchmarkWireFormat wireFormat)
     {
         RuntimeMetricsSnapshot before = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement measurement = new(
@@ -263,11 +306,12 @@ internal static partial class ReliableBenchmarkWorker
                 }).ToArray(),
             };
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/server-benchmark/documents/upsert",
                 request,
                 BenchmarkJsonContext.Default.ServerDocumentBatchRequest,
+                wireFormat,
                 "benchmark-ingest-" + batchIndex++.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
             latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
@@ -284,7 +328,8 @@ internal static partial class ReliableBenchmarkWorker
         DocumentRecord[] indexedDocuments,
         Process server,
         string storagePath,
-        int topK)
+        int topK,
+        BenchmarkWireFormat wireFormat)
     {
         RuntimeMetricsSnapshot before = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement measurement = new(
@@ -315,15 +360,18 @@ internal static partial class ReliableBenchmarkWorker
                 Include = [],
             };
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/server-benchmark/documents/query",
                 request,
                 BenchmarkJsonContext.Default.ServerQueryRequest,
+                wireFormat,
                 "benchmark-query-" + index.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
-            ServerQueryResponse result = await response.Content.ReadFromJsonAsync(BenchmarkJsonContext.Default.ServerQueryResponse)
-                .ConfigureAwait(false) ?? throw new InvalidDataException("The server query response was empty.");
+            ServerQueryResponse result = await ReadPayloadAsync(
+                response,
+                BenchmarkJsonContext.Default.ServerQueryResponse,
+                wireFormat).ConfigureAwait(false);
             latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
             if (mode == SearchMode.Vector)
             {
@@ -340,7 +388,8 @@ internal static partial class ReliableBenchmarkWorker
         HttpClient client,
         DocumentRecord[] documents,
         Process server,
-        string storagePath)
+        string storagePath,
+        BenchmarkWireFormat wireFormat)
     {
         RuntimeMetricsSnapshot before = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement measurement = new(
@@ -366,12 +415,13 @@ internal static partial class ReliableBenchmarkWorker
                 }).ToArray(),
             };
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await SendJsonAsync(
+            using HttpResponseMessage response = await SendPayloadAsync(
                 client,
                 HttpMethod.Patch,
                 "/api/v1/collections/server-benchmark/documents/",
                 request,
                 BenchmarkJsonContext.Default.ServerDocumentUpdateBatchRequest,
+                wireFormat,
                 "benchmark-update-" + batchIndex++.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
             latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
@@ -384,7 +434,8 @@ internal static partial class ReliableBenchmarkWorker
         HttpClient client,
         DocumentRecord[] documents,
         Process server,
-        string storagePath)
+        string storagePath,
+        BenchmarkWireFormat wireFormat)
     {
         RuntimeMetricsSnapshot before = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement measurement = new(
@@ -405,11 +456,12 @@ internal static partial class ReliableBenchmarkWorker
                 Ids = batch.Select(static document => document.Id).ToArray(),
             };
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/server-benchmark/documents/delete",
                 request,
                 BenchmarkJsonContext.Default.ServerDocumentDeleteRequest,
+                wireFormat,
                 "benchmark-delete-" + batchIndex++.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
             latencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
@@ -424,7 +476,8 @@ internal static partial class ReliableBenchmarkWorker
         string storagePath,
         DocumentRecord[] documents,
         float[] query,
-        int topK)
+        int topK,
+        BenchmarkWireFormat wireFormat)
     {
         RuntimeMetricsSnapshot pressureBefore = await ScrapeRuntimeMetricsAsync(client).ConfigureAwait(false);
         using ReliableOperationMeasurement pressureMeasurement = new(
@@ -450,11 +503,12 @@ internal static partial class ReliableBenchmarkWorker
             };
             await pressureStart.Task.ConfigureAwait(false);
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 $"/api/v1/collections/pressure-{index % 8}/documents/upsert",
                 request,
                 BenchmarkJsonContext.Default.ServerDocumentBatchRequest,
+                wireFormat,
                 "benchmark-pressure").ConfigureAwait(false);
             double latency = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             if (response.IsSuccessStatusCode)
@@ -462,7 +516,7 @@ internal static partial class ReliableBenchmarkWorker
                 return new ControlRequestResult("success", latency);
             }
 
-            string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            string body = await ReadDiagnosticBodyAsync(response).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.TooManyRequests && body.Contains("queue_saturated", StringComparison.Ordinal))
             {
                 return new ControlRequestResult("queue", latency);
@@ -489,11 +543,12 @@ internal static partial class ReliableBenchmarkWorker
             };
             await pressureStart.Task.ConfigureAwait(false);
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/server-benchmark/documents/query",
                 request,
                 BenchmarkJsonContext.Default.ServerQueryRequest,
+                wireFormat,
                 "benchmark-mixed-read-" + index.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(false);
             await EnsureSuccessAsync(response).ConfigureAwait(false);
             return new ControlRequestResult("success", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
@@ -527,11 +582,12 @@ internal static partial class ReliableBenchmarkWorker
         {
             ServerQueryRequest request = new() { Vector = query, Mode = SearchMode.Vector, Limit = topK, Include = [] };
             long started = Stopwatch.GetTimestamp();
-            using HttpResponseMessage response = await PostJsonAsync(
+            using HttpResponseMessage response = await PostPayloadAsync(
                 client,
                 "/api/v1/collections/server-benchmark/documents/query",
                 request,
                 BenchmarkJsonContext.Default.ServerQueryRequest,
+                wireFormat,
                 "benchmark-rate-probe").ConfigureAwait(false);
             rateLatencies.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
             if (response.StatusCode == HttpStatusCode.TooManyRequests &&
@@ -574,7 +630,8 @@ internal static partial class ReliableBenchmarkWorker
         Process server,
         string storagePath,
         IReadOnlyList<float[]> queries,
-        ReliableBenchmarkProfile profile)
+        ReliableBenchmarkProfile profile,
+        BenchmarkWireFormat wireFormat)
     {
         if (profile.SaturationWarmupSeconds > 0)
         {
@@ -587,7 +644,8 @@ internal static partial class ReliableBenchmarkWorker
                 profile.SaturationRatesPerSecond[0],
                 profile.SaturationWarmupSeconds,
                 profile,
-                "SaturationWarmup").ConfigureAwait(false);
+                "SaturationWarmup",
+                wireFormat).ConfigureAwait(false);
         }
 
         List<OperationIterationResult> operations = [];
@@ -602,7 +660,8 @@ internal static partial class ReliableBenchmarkWorker
                 rate,
                 profile.SaturationStageSeconds,
                 profile,
-                $"SaturationOpenLoop-{rate.ToString(CultureInfo.InvariantCulture)}qps").ConfigureAwait(false);
+                $"SaturationOpenLoop-{rate.ToString(CultureInfo.InvariantCulture)}qps",
+                wireFormat).ConfigureAwait(false);
             operations.Add(stage.Operation);
         }
 
@@ -632,7 +691,8 @@ internal static partial class ReliableBenchmarkWorker
         int offeredRate,
         int durationSeconds,
         ReliableBenchmarkProfile profile,
-        string operationName)
+        string operationName,
+        BenchmarkWireFormat wireFormat)
     {
         int offered = checked(offeredRate * durationSeconds);
         double[] latencies = new double[offered];
@@ -669,11 +729,12 @@ internal static partial class ReliableBenchmarkWorker
                         Limit = topK,
                         Include = [],
                     };
-                    using HttpResponseMessage response = await PostJsonAsync(
+                    using HttpResponseMessage response = await PostPayloadAsync(
                         client,
                         "/api/v1/collections/server-benchmark/documents/query",
                         request,
                         BenchmarkJsonContext.Default.ServerQueryRequest,
+                        wireFormat,
                         "benchmark-saturation").ConfigureAwait(false);
                     latencies[scheduled.Sequence] = Stopwatch.GetElapsedTime(
                         scheduled.IntendedTimestamp,
@@ -684,7 +745,7 @@ internal static partial class ReliableBenchmarkWorker
                     }
                     else if (response.StatusCode == HttpStatusCode.TooManyRequests)
                     {
-                        string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        string body = await ReadDiagnosticBodyAsync(response).ConfigureAwait(false);
                         string? kind = response.Headers.TryGetValues(
                             "X-SlimVector-RateLimit-Kind",
                             out IEnumerable<string>? kinds)
@@ -867,29 +928,43 @@ internal static partial class ReliableBenchmarkWorker
         return startInfo;
     }
 
-    private static async Task<HttpResponseMessage> PostJsonAsync<T>(
+    private static async Task<HttpResponseMessage> PostPayloadAsync<T>(
         HttpClient client,
         string requestUri,
         T value,
         JsonTypeInfo<T> typeInfo,
-        string? clientId = null) => await SendJsonAsync(
+        BenchmarkWireFormat wireFormat,
+        string? clientId = null) => await SendPayloadAsync(
             client,
             HttpMethod.Post,
             requestUri,
             value,
             typeInfo,
+            wireFormat,
             clientId).ConfigureAwait(false);
 
-    private static async Task<HttpResponseMessage> SendJsonAsync<T>(
+    private static async Task<HttpResponseMessage> SendPayloadAsync<T>(
         HttpClient client,
         HttpMethod method,
         string requestUri,
         T value,
         JsonTypeInfo<T> typeInfo,
+        BenchmarkWireFormat wireFormat,
         string? clientId = null)
     {
-        using JsonContent content = JsonContent.Create(value, typeInfo);
-        using HttpRequestMessage request = new(method, requestUri) { Content = content };
+        using HttpRequestMessage request = new(method, requestUri);
+        if (wireFormat == BenchmarkWireFormat.MessagePack)
+        {
+            byte[] payload = MessagePackSerializer.Serialize(value, BenchmarkMessagePack.Options);
+            request.Content = new ByteArrayContent(payload);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(BenchmarkMessagePack.MediaType);
+            request.Headers.Accept.ParseAdd(BenchmarkMessagePack.MediaType);
+        }
+        else
+        {
+            request.Content = JsonContent.Create(value, typeInfo);
+        }
+
         if (clientId is not null)
         {
             request.Headers.Add("X-SlimVector-Client-Id", clientId);
@@ -898,13 +973,43 @@ internal static partial class ReliableBenchmarkWorker
         return await client.SendAsync(request).ConfigureAwait(false);
     }
 
+    private static async Task<T> ReadPayloadAsync<T>(
+        HttpResponseMessage response,
+        JsonTypeInfo<T> typeInfo,
+        BenchmarkWireFormat wireFormat)
+    {
+        if (wireFormat == BenchmarkWireFormat.MessagePack)
+        {
+            await using Stream stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            return await MessagePackSerializer.DeserializeAsync<T>(stream, BenchmarkMessagePack.Options).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The server response was empty.");
+        }
+
+        return await response.Content.ReadFromJsonAsync(typeInfo).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The server response was empty.");
+    }
+
     private static async Task EnsureSuccessAsync(HttpResponseMessage response)
     {
         if (!response.IsSuccessStatusCode)
         {
-            string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            string body = await ReadDiagnosticBodyAsync(response).ConfigureAwait(false);
             throw new HttpRequestException($"SlimVector returned HTTP {(int)response.StatusCode}: {body}");
         }
+    }
+
+    private static async Task<string> ReadDiagnosticBodyAsync(HttpResponseMessage response)
+    {
+        if (string.Equals(
+            response.Content.Headers.ContentType?.MediaType,
+            BenchmarkMessagePack.MediaType,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            byte[] bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            return MessagePackSerializer.ConvertToJson(bytes, BenchmarkMessagePack.Options);
+        }
+
+        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
     }
 
     private static async Task WaitForServerAsync(HttpClient client, Process process, TimeSpan timeout)

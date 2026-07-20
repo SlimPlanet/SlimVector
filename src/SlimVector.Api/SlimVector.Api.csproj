@@ -6,13 +6,15 @@
     <TrimMode>full</TrimMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
-    <!-- MemoryPack 1.21.4 is source-generated and Native-AOT friendly, but its unused
-         runtime formatter fallback paths produce assembly-level aggregate warnings. -->
+    <!-- MemoryPack and MessagePack use generated SlimVector contracts, but their unused
+         runtime fallback paths produce assembly-level aggregate trim/AOT warnings. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../SlimVector.Application/SlimVector.Application.csproj" />
     <ProjectReference Include="../SlimVector.Domain/SlimVector.Domain.csproj" />
+    <ProjectReference Include="../SlimVector.Protocol/SlimVector.Protocol.csproj" />
+    <PackageReference Include="MessagePack" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
   </ItemGroup>
 </Project>

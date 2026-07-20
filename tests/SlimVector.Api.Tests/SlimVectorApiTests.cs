@@ -19,6 +19,10 @@ namespace SlimVector.Api.Tests;
 
 public sealed class SlimVectorApiTests
 {
+    private static readonly JsonElement BlueMetadata = ParseJsonElement("\"blue\"");
+    private static readonly JsonElement RankMetadata = ParseJsonElement("7");
+    private static readonly JsonElement FlagsMetadata = ParseJsonElement("[true,false]");
+
     [Fact]
     public async Task DocumentPaginationReturnsAnOpaqueContinuationToken()
     {
@@ -548,6 +552,98 @@ public sealed class SlimVectorApiTests
     }
 
     [Fact]
+    public async Task MessagePackClientNegotiatesCrudMetadataQueriesAndProblems()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string dataPath = Path.Combine(Path.GetTempPath(), "SlimVector.Api.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using WebApplicationFactory<Program> factory = CreateFactory(dataPath);
+            using HttpClient httpClient = factory.CreateClient();
+            SlimVector.Client.SlimVectorClient client = new(
+                httpClient,
+                SlimVector.Client.SlimVectorWireFormat.MessagePack);
+            SlimVector.Client.CollectionInfo collection = await client.CreateCollectionAsync(
+                new SlimVector.Client.CreateCollectionRequest
+                {
+                    Name = "messagepack",
+                    Dimension = 2,
+                    Metric = DistanceMetric.Cosine,
+                    VectorIndex = new VectorIndexConfiguration
+                    {
+                        Kind = VectorIndexKind.Flat,
+                        Quantization = VectorQuantizationKind.Float32,
+                    },
+                },
+                cancellationToken);
+            Assert.Equal(VectorIndexKind.Flat, collection.VectorIndex.Kind);
+            await client.AddDocumentsAsync(
+                "messagepack",
+                [new SlimVector.Client.SlimVectorDocument
+                {
+                    Id = "one",
+                    Text = "binary transport",
+                    Vector = [1, 0],
+                    Metadata = new Dictionary<string, JsonElement>
+                    {
+                        ["tenant"] = BlueMetadata,
+                        ["rank"] = RankMetadata,
+                        ["flags"] = FlagsMetadata,
+                    },
+                }],
+                cancellationToken: cancellationToken);
+
+            SlimVector.Client.SlimVectorQueryResult result = await client.QueryAsync(
+                "messagepack",
+                new SlimVector.Client.SlimVectorQuery
+                {
+                    Vector = [1, 0],
+                    Mode = SearchMode.Vector,
+                    Consistency = ReadConsistency.Leader,
+                    Limit = 1,
+                    Filter = new SlimVector.Client.MetadataFilterRequest
+                    {
+                        Operator = MetadataOperator.Equal,
+                        Field = "tenant",
+                        Value = BlueMetadata,
+                    },
+                },
+                cancellationToken);
+            SlimVector.Client.SlimVectorQueryHit hit = Assert.Single(result.Hits);
+            Assert.Equal("one", hit.Id);
+            Assert.Equal(7, hit.Metadata?["rank"].GetInt64());
+
+            using HttpRequestMessage negotiatedRequest = new(HttpMethod.Get, "/api/v1/collections/messagepack");
+            negotiatedRequest.Headers.Accept.ParseAdd("application/vnd.msgpack");
+            using HttpResponseMessage negotiatedResponse = await httpClient.SendAsync(negotiatedRequest, cancellationToken);
+            negotiatedResponse.EnsureSuccessStatusCode();
+            Assert.Equal("application/vnd.msgpack", negotiatedResponse.Content.Headers.ContentType?.MediaType);
+            string diagnosticJson = MessagePack.MessagePackSerializer.ConvertToJson(
+                await negotiatedResponse.Content.ReadAsByteArrayAsync(cancellationToken),
+                MessagePack.MessagePackSerializerOptions.Standard,
+                cancellationToken);
+            Assert.Contains("\"vectorIndex\"", diagnosticJson, StringComparison.Ordinal);
+            Assert.Contains("\"metric\":\"cosine\"", diagnosticJson, StringComparison.Ordinal);
+            Assert.Contains("\"createdAt\":\"", diagnosticJson, StringComparison.Ordinal);
+
+            string openApi = await httpClient.GetStringAsync("/openapi/v1.json", cancellationToken);
+            Assert.Contains("application/vnd.msgpack", openApi, StringComparison.Ordinal);
+
+            SlimVector.Client.SlimVectorClientException missing = await Assert.ThrowsAsync<SlimVector.Client.SlimVectorClientException>(
+                () => client.GetCollectionAsync("missing", cancellationToken));
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+            Assert.Equal(ErrorCodes.CollectionNotFound, missing.ErrorCode);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath))
+            {
+                Directory.Delete(dataPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task SignedGeoReplicationEndpointAppliesAndDeduplicatesEvent()
     {
         const string sharedSecret = "0123456789abcdef0123456789abcdef";
@@ -684,6 +780,12 @@ public sealed class SlimVectorApiTests
     {
         string line = metrics.Split('\n').Single(candidate => candidate.StartsWith(name + " ", StringComparison.Ordinal));
         return double.Parse(line.AsSpan(name.Length + 1), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static JsonElement ParseJsonElement(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     private sealed class RedirectingConsensus : IConsensusCoordinator

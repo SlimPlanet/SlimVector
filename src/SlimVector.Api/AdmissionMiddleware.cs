@@ -46,8 +46,6 @@ internal sealed partial class AdmissionMiddleware
         }
 
         int retryAfterSeconds = Math.Max(1, checked((int)Math.Ceiling(decision.RetryAfter.TotalSeconds)));
-        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        context.Response.ContentType = "application/problem+json";
         context.Response.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
         context.Response.Headers["X-SlimVector-RateLimit-Kind"] = decision.RejectionKind.ToString().ToLowerInvariant();
         context.Response.Headers["X-SlimVector-RateLimit-Scope"] = decision.Scope ?? "unknown";
@@ -76,11 +74,7 @@ internal sealed partial class AdmissionMiddleware
             decision.RejectionKind,
             decision.Scope ?? "unknown",
             retryAfterSeconds);
-        await context.Response.WriteAsJsonAsync(
-            problem,
-            ApiJsonContext.Default.ProblemDetails,
-            contentType: "application/problem+json",
-            context.RequestAborted).ConfigureAwait(false);
+        await ApiSerialization.WriteProblemAsync(context, problem, context.RequestAborted).ConfigureAwait(false);
     }
 
     private static string GetClientId(HttpContext context)

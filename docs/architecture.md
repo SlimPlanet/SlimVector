@@ -6,12 +6,12 @@ SlimVector separates domain rules, durable state, derived search structures, con
 
 A write follows this path:
 
-1. The Minimal API binds a source-generated JSON contract and converts JSON metadata to typed values.
+1. The Minimal API binds either source-generated JSON or generated, untrusted-data MessagePack contracts and converts metadata to typed values. JSON remains the default public representation.
 2. Domain, batch-size, text-size, and admission checks run before durable mutation.
 3. The adaptive scheduler admits the request into bounded global, client, collection, and shard queues.
 4. A per-shard worker builds a fair batch by rotating between collections, then proposes one deterministic MemoryPack command.
 5. Single-node mode applies it to the local RF1 group. Cluster mode resolves every document through its immutable virtual shard and commits the partitioned command through the corresponding data Raft leader. An API node that does not host that group forwards the exact idempotent MemoryPack command over authenticated HTTP/2.
-6. The storage state machine writes an immutable checksummed segment and atomically replaces its manifest.
+6. The storage state machine writes an immutable checksummed MemoryPack segment and atomically replaces its small JSON manifest.
 7. The open collection runtime updates in-memory state and writes a versioned derived-index snapshot. A stale snapshot is safe because its document signature forces reconstruction.
 8. When geographic replication is enabled, a separate durable outbox forwards the semantic command to the secondary.
 
@@ -27,7 +27,7 @@ Collections have 1,024 virtual shards by default. The shard count is persisted a
 
 ## Durable state
 
-The catalog, immutable segments, and manifests are authoritative. A node stores authoritative collection files only below `data-groups/{groupId}/collections/{collectionId}` for groups it hosts. Tombstones preserve deletes until compaction. Catalog/manifests use atomic replacement; segment and derived-index files carry SHA-256 checksums. Startup replays valid segments by sequence and reconciles orphaned files left by a crash.
+The catalog, immutable segments, and manifests are authoritative. A node stores authoritative collection files only below `data-groups/{groupId}/collections/{collectionId}` for groups it hosts. Tombstones preserve deletes until compaction. Human-inspectable catalog/manifests use versioned JSON plus atomic replacement; high-volume segment bodies use MemoryPack and segment/derived-index files carry SHA-256 checksums. Startup reads legacy JSON segments as well as current `SVS2` segments, replays them by sequence, and reconciles orphaned files left by a crash.
 
 Flat vectors, HNSW graphs, BM25 term structures, and metadata structures are also stored in a combined `search-index-v1` derived snapshot. The snapshot includes the ordered id/version signature and index configuration. Any mismatch, malformed payload, or checksum failure prevents reuse; authoritative segments can reconstruct all four indexes.
 

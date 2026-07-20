@@ -20,6 +20,12 @@ internal enum BenchmarkStorageMode
     Durable,
 }
 
+internal enum BenchmarkWireFormat
+{
+    Json,
+    MessagePack,
+}
+
 internal sealed record ReliableBenchmarkProfile(
     string Name,
     int VectorCount,
@@ -83,6 +89,8 @@ internal sealed record BenchmarkWorkerJob
     public required BenchmarkDatasetSpecification Dataset { get; init; }
 
     public BenchmarkStorageMode StorageMode { get; init; }
+
+    public BenchmarkWireFormat WireFormat { get; init; }
 
     public int Iteration { get; init; }
 

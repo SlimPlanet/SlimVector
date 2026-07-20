@@ -18,7 +18,9 @@ data/
   geo-replication/...
 ```
 
-The topology catalog and collection manifests are versioned JSON written through a temporary file, flush, and atomic rename. Each node creates only the `data-groups` directories whose replica sets include that node; it never materializes the complete collection unless it owns every group (the normal single-node RF1 case). Segment bodies are versioned payloads with a SHA-256 header. Deletes are stored as tombstone operations, so replay cannot resurrect an older value.
+The topology catalog and collection manifests are small, infrequently updated, operator-inspectable control files. They remain versioned JSON written through a temporary file, flush, and atomic rename; their durability cost is dominated by the atomic filesystem protocol rather than serialization. The storage-format marker and resumable rebalance journal follow the same rule.
+
+Each node creates only the `data-groups` directories whose replica sets include that node; it never materializes the complete collection unless it owns every group (the normal single-node RF1 case). Authoritative segment bodies use a versioned MemoryPack payload prefixed by the `SVS2` magic and protected by the existing SHA-256 header. This avoids JSON number parsing and reduces vector-heavy bytes on the write/replay path. Legacy v1 JSON segments remain readable; the next real compaction rewrites their live state as v2 MemoryPack. Deletes are stored as tombstone operations, so replay cannot resurrect an older value.
 
 ## Commit and recovery
 
