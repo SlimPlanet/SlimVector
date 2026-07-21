@@ -1,14 +1,16 @@
 # Troubleshooting
 
+> [Documentation index](README.md) · [User guide](user-guide.md) · [Observability](observability.md)
+
 ## Startup refuses configuration
 
 Read the complete options-validation failure; SlimVector reports every inconsistency found in the section. For cluster failures, verify IP literals (not DNS names) in Raft TCP endpoints, inclusion of the local base endpoint, identical member order/count, one public API URI per member, and enough consecutive ports.
 
 Secrets must meet length/encoding rules. Backup encryption requires exactly 32 decoded bytes, not a 32-character base64 string.
 
-## `307 not_leader`
+## `307 not_leader` on expert administration
 
-Allow 307 redirects without changing POST/PATCH to GET. If `Location` is absent, the leader was unknown or no public mapping matched its Raft IP. Check `Raft:Members`, `MemberApiEndpoints`, and leader metrics. Do not retry an unbounded loop; use jittered retries and honor 503/`Retry-After` during election.
+Ordinary data requests route internally from any API node; legacy expert membership operations may still redirect. Allow 307 redirects without changing POST/PATCH to GET. If `Location` is absent, the leader was unknown or no public mapping matched its Raft IP. Check `Raft:Members`, `MemberApiEndpoints`, and leader metrics. Do not retry an unbounded loop; use jittered retries and honor 503/`Retry-After` during election.
 
 ## `503 quorum_unavailable` or readiness failure
 
@@ -25,6 +27,20 @@ Read the authenticated index status reason and migration metrics. `rejected` mea
 ## Membership change conflict
 
 HTTP 409 `membership_conflict` means another change owns the group, removal violates `MinimumVotingMembers`, or the target is the current leader. Query membership status, wait for catch-up, transfer leadership when necessary, and operate one group at a time. A new joiner must use `JoinExistingCluster=true` with empty member arrays; never seed it as an independent one-node cluster.
+
+## Rebalance does not move data
+
+A registered node does not receive data until a node rebalance plan is approved. Confirm that the caller reached the catalog leader, `Rebalancing:Enabled=true`, the plan id has not expired, target disks remain below the high watermark, and no source/target exceeds the concurrent-move limit. Query both node topology and `/admin/cluster/rebalance/status`; approved movement checkpoints survive restart, while an unapproved plan does not.
+
+During drain, do not remove the node until topology shows no replica assigned to it. A plan with no beneficial movement can indicate insufficient RF/zone headroom or that the remaining nodes would exceed their target/high watermark.
+
+## Invalid or stale continuation token
+
+Continuation tokens are bound to a collection and placement epoch. Do not reuse one for another collection or after shard cutover; restart listing from the first page. Use opaque tokens for deep pagination rather than increasing `offset`, which is intentionally capped.
+
+## JSON or MessagePack body is rejected
+
+Use `Content-Type: application/json` for JSON and `application/vnd.msgpack` for binary requests. Set `Accept` independently for the response. MessagePack must use camel-case map keys and supported scalar/array metadata; typeless objects and contractless CLR payloads are not accepted. In JSON, dates and GUIDs require `$date`/`$guid` tagged objects. Compare against `/openapi/v1.json` and log the Problem Details `traceId`.
 
 ## Slow query
 

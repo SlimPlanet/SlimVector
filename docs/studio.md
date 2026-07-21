@@ -1,5 +1,7 @@
 # SlimVector Studio
 
+> [Documentation index](README.md) · [User guide](user-guide.md) · [Document ingestion](document-ingestion.md)
+
 SlimVector Studio is the batteries-included local web application for exercising the database and the document-ingestion library. It hosts `AddSlimVector` in the same ASP.NET Core process: starting the Studio starts the database, write scheduler, storage engine, consensus coordinator, backup service, ingestion pipeline, and UI together.
 
 ## Start
@@ -49,7 +51,7 @@ When replacement is enabled, new chunks are committed before stale chunks with t
 
 The query lab exposes every `SearchMode`:
 
-- **Vector** vectorizes the query locally and searches Flat or HNSW.
+- **Vector** vectorizes the query locally and searches the collection's active vector index.
 - **BM25** uses the persistent text index only.
 - **Hybrid** vectorizes locally and fuses independent vector and text ranks with configurable weights.
 - **Metadata** performs a filter-only query and does not require text.
@@ -101,3 +103,5 @@ All ordinary SlimVector sections remain available, including vector/text/metadat
 ## Privacy and network behavior
 
 Document bytes, extracted text, chunks, queries, and embeddings stay in the Studio process and SlimVector storage. The only outbound request made by the default configuration is the one-time download of the pinned tokenizer and ONNX model from Hugging Face. There is no telemetry exporter or remote inference provider in the Studio.
+
+Studio is intended for local exploration and trusted operator workflows. Its `/studio/api` surface is not a multi-tenant authentication boundary; place a remotely exposed instance behind TLS and access control, keep upload limits enabled, and follow [security](security.md).

@@ -1,5 +1,7 @@
 # Observability
 
+> [Documentation index](README.md) · [Operations guide](user-guide.md#operate-slimvector) · [Troubleshooting](troubleshooting.md)
+
 ## Health
 
 - `/health/live` confirms the process can answer HTTP.
@@ -23,6 +25,20 @@ Important series include:
 - backup/restore: successful/failed totals and deduplicated blobs.
 - placement: paused state, in-flight move count, per-move state/epoch info, and snapshot/replay high-water marks.
 
+The additive runtime/storage series have precise units and monotonicity:
+
+| Metric | Meaning |
+| --- | --- |
+| `slimvector_managed_allocated_bytes_total` | cumulative managed bytes allocated by the process |
+| `slimvector_gc_collections_total{generation}` | cumulative collections per GC generation |
+| `slimvector_gc_pause_seconds_total` | cumulative observed GC pause seconds |
+| `slimvector_gc_heap_bytes{generation}` | current managed heap bytes by generation |
+| `slimvector_storage_read_bytes_total` | cumulative logical bytes read by instrumented storage |
+| `slimvector_storage_written_bytes_total` | cumulative logical bytes written by instrumented storage |
+| `slimvector_storage_durable_flushes_total` | cumulative durable flush requests |
+
+The storage counters are logical application I/O, not device-level physical write guarantees.
+
 Alert on readiness loss, `slimvector_cluster_unavailable_nodes > 0`, under-replication, any divergence, sustained geo pending growth, repeated backup failures, no successful backup within the expected interval, write rejections, queue depth near a configured capacity, applied index lag, and managed-memory growth alongside open collections.
 
 Rates should be calculated by the monitoring system from counters. Cumulative duration divided by request count gives a coarse mean; use structured slow-query events for outliers.
@@ -42,3 +58,5 @@ Configure JSON console formatting in the host/orchestrator when `StructuredConso
 5. Check managed memory and open collection count; shorten idle timeout only if cold-load cost is acceptable.
 
 Metrics combine the persistent catalog view with node-local storage and Raft values. Scrape every node and retain `group`/`node`/`local` labels. Replica lag is nullable until its hosting node reports a local membership observation; stale routing treats unknown lag as least preferred.
+
+`/metrics` and topology labels may reveal collection, group, and node identifiers. Keep the endpoint on a monitoring network or protect it at the ingress; it has no separate built-in authentication mechanism.

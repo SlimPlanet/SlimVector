@@ -1,6 +1,6 @@
 # ADR 0002: Independent catalog and data Raft groups
 
-- Status: accepted
+- Status: superseded in part by [ADR 0006](0006-shared-nothing-data-group-placement.md)
 - Date: 2026-07-18
 
 ## Context
@@ -9,10 +9,10 @@ A single consensus log would serialize every collection write and make one hot c
 
 ## Decision
 
-Run one catalog group and a configurable number of independent data groups on every cluster node using DotNext.Net.Cluster 6.x. Give every group an independent TCP port offset, WAL, election, snapshot schedule, applied index, and idempotency history. Batch/fairness workers operate per data group. ADR 0005 supersedes the original whole-collection hash with persisted virtual-shard placement while retaining this bounded physical group pool.
+The original decision ran one catalog group and a configurable number of independent data groups on every cluster node using DotNext.Net.Cluster 6.x. Every group has an independent port, WAL, election, snapshot schedule, applied index, and idempotency history. Batch/fairness workers operate per data group. ADR 0005 superseded whole-collection hashing with persisted virtual-shard placement; ADR 0006 then replaced identical all-node membership with dynamic per-group replica sets.
 
 The catalog is the authority for definitions/placement. Data commands include the collection definition needed for deterministic state-machine validation. Changing the number of data groups is an explicit resharding event, not a transparent configuration edit.
 
 ## Consequences
 
-Unrelated shards can commit concurrently and failures/metrics are isolated by group. Operators must expose consecutive ports and keep topology identical. Cross-shard transactions are not provided.
+Unrelated shards can commit concurrently and failures/metrics are isolated by group. Operators reserve a persistent port range, but the catalog now decides which subset each node starts. Cross-group transactions are not provided.

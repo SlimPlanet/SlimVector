@@ -1,5 +1,7 @@
 # Architecture
 
+> [Documentation index](README.md) · [User guide](user-guide.md) · [ADRs](README.md#design-and-development)
+
 SlimVector separates domain rules, durable state, derived search structures, consensus, geographic replication, application orchestration, HTTP transport, and the typed client. The same storage state machine is used in single-node and clustered modes.
 
 ## Request paths
@@ -10,7 +12,7 @@ A write follows this path:
 2. Domain, batch-size, text-size, and admission checks run before durable mutation.
 3. The adaptive scheduler admits the request into bounded global, client, collection, and shard queues.
 4. A per-shard worker builds a fair batch by rotating between collections, then proposes one deterministic MemoryPack command.
-5. Single-node mode applies it to the local RF1 group. Cluster mode resolves every document through its immutable virtual shard and commits the partitioned command through the corresponding data Raft leader. An API node that does not host that group forwards the exact idempotent MemoryPack command over authenticated HTTP/2.
+5. Single-node mode applies it to the local RF1 group. Cluster mode resolves every document through its immutable virtual shard and commits the partitioned command through the corresponding data Raft leader. An API node that does not host that group forwards the exact idempotent MemoryPack command over HTTP/2. The payload is HMAC-signed when the administrator key is configured, as required by the production hardening guidance.
 6. The storage state machine writes an immutable checksummed MemoryPack segment and atomically replaces its small JSON manifest.
 7. The open collection runtime updates in-memory state and writes a versioned derived-index snapshot. A stale snapshot is safe because its document signature forces reconstruction.
 8. When geographic replication is enabled, a separate durable outbox forwards the semantic command to the secondary.
@@ -43,4 +45,4 @@ A backup establishes linearizable barriers, serializes each collection to a vers
 
 Backups are collection-consistent at their individual barriers; they are not a cross-collection transaction. Restore verification reads and authenticates every referenced blob before a full restore starts deleting current collections.
 
-See [ADR 0002](adr/0002-multi-raft-groups.md), [ADR 0003](adr/0003-immutable-storage-and-derived-indexes.md), and [ADR 0004](adr/0004-separate-geographic-replication.md).
+See [ADR 0002](adr/0002-multi-raft-groups.md), [ADR 0003](adr/0003-immutable-storage-and-derived-indexes.md), [ADR 0004](adr/0004-separate-geographic-replication.md), [ADR 0005](adr/0005-virtual-shards-placement-epochs.md), and [ADR 0006](adr/0006-shared-nothing-data-group-placement.md).

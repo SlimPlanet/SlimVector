@@ -1,6 +1,8 @@
 # Configuration
 
-Every section binds to a dedicated C# options type and is validated with `ValidateOnStart`. Environment variables replace `:` with `__`; arrays use numeric suffixes, for example `AutoIndex__AllowedIndexes__0=Hnsw`.
+> [Documentation index](README.md) · [User guide](user-guide.md) · [Security](security.md)
+
+Every section binds to a dedicated C# options type and is validated with `ValidateOnStart`. Standard ASP.NET Core precedence applies: environment variables override appsettings values, `:` becomes `__`, and arrays use numeric suffixes, for example `AutoIndex__AllowedIndexes__0=Hnsw`. Durations use .NET `TimeSpan` syntax such as `00:00:30`; sizes are bytes unless their name states otherwise.
 
 Complete examples are [single-node appsettings](../src/SlimVector.Api/appsettings.json), [cluster appsettings](../config/appsettings.Cluster.example.json), and [evolving Compose cluster](../compose.cluster.yml).
 
@@ -24,11 +26,15 @@ Complete examples are [single-node appsettings](../src/SlimVector.Api/appsetting
 
 The HNSW/IVF/PQ/DiskANN sections populate a new collection's configuration when `vectorIndex` is omitted. An explicitly supplied collection configuration is stored in the catalog and remains authoritative across restart.
 
+`Raft:DataGroupCount` seeds the bounded data-group pool at bootstrap and remains for configuration compatibility. It is not a declaration that every server stores every group: the catalog's dynamic `DataGroupDescriptor` replica sets become authoritative, and a joined node starts only groups assigned to it. `DataPortRangeStart`/`DataPortRangeCount` reserve stable local ports for those dynamic assignments.
+
 ## Bootstrap versus join mode
 
 Initial cluster voters set `Raft:JoinExistingCluster=false` and provide three catalog `Members` plus matching `MemberApiEndpoints`, `MemberNodeIds`, `MemberInternalEndpoints`, `MemberZones` and `MemberCapacityBytes`. These bootstrap arrays must be identical and ordered identically on the three voters. Every server also supplies its own stable `NodeId`, public/internal API endpoints, zone, usable disk capacity and persistent data-port range. A new server registers through `/admin/cluster/nodes/join`; the catalog records it, seeds its signed persistent catalog cache, computes a read-only capacity-aware plan, and waits for explicit approval before installing data-group replicas. Joined data nodes do not become catalog voters.
 
 Critical startup failures include invalid/duplicate topology, missing local or API mappings, exhausted port offsets, bad election/heartbeat ratios, empty Auto allowed sets, non-divisible fixed IVF-PQ dimensions, invalid DiskANN page/cache/retention bounds, inconsistent queue/token reserves, unsafe timeouts, weak administrator/geo secrets, invalid backup encryption keys, and incomplete S3 credentials.
+
+Join-mode nodes set `JoinExistingCluster=true` and leave every bootstrap member array empty. Their persistent `NodeId`, capacity, zone, internal/public endpoints, Raft host, and port range must match the subsequent node-registration request.
 
 ## Placement controller
 
@@ -45,3 +51,5 @@ A contractual limit and congestion refusal are distinct 429 responses. Both incl
 ## Secrets
 
 Do not commit `Api:AdminApiKey`, `GeoReplication:SharedSecret`, backup encryption keys, or S3 credentials. Inject them with an orchestrator secret store. Administrator and geo secrets must be independent. Generate a backup AES-256 key with `openssl rand -base64 32` and retain old keys for the lifetime of backups encrypted with them.
+
+The public data API has no built-in end-user identity or row-level authorization. In production, enforce TLS, authentication, authorization, and trusted `X-SlimVector-Client-Id` injection at an ingress. Configure the same strong `Api:AdminApiKey` on every cluster node: besides protecting enabled administrator routes, it enables HMAC signatures on internal data, query, and catalog RPC. See [security](security.md).

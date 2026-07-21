@@ -1,8 +1,12 @@
 # Indexes and search
 
+> [Documentation index](README.md) · [User guide](user-guide.md#choose-an-index) · [Benchmarks](testing.md#benchmarks)
+
 ## Vector indexes
 
 SlimVector assigns every collection a stable set of virtual shards and persists their mapping to physical Raft data groups. Every vector index implements the same mutation, filtered-search, persistence, and rebuild contract; a node merges the shard materialization into one comparable search result.
+
+`auto` is the recommended starting point: it keeps an active generation serving while it evaluates and validates a candidate. Pin a kind only when representative recall/latency, memory, update-rate, and cold-load measurements justify the operational commitment.
 
 | Kind | Search | Persistence and updates | Best fit |
 | --- | --- | --- | --- |

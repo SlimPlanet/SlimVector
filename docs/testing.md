@@ -1,5 +1,7 @@
 # Testing and benchmarks
 
+> [Documentation index](README.md) · [User guide](user-guide.md) · [Observability](observability.md)
+
 Run deterministic quality gates from the repository root:
 
 ```bash
@@ -73,3 +75,15 @@ The default clustered synthetic workload uses independent perturbed queries, Zip
 Every operation reports its latency unit and batch size, fork-level wall/throughput distributions, deterministic bootstrap confidence interval, qualified p50/p95/p99, CPU core-equivalents, normalized CPU, RSS/private-memory samples, managed allocations and GC, logical storage bytes and durable flushes. p50 requires two samples, p95 twenty and p99 one hundred; unavailable metrics are serialized as `null` and rendered as `n/a`. Directory-size changes are named artifact deltas and are not described as physical I/O.
 
 Every versioned run writes `benchmark-summary.md`, a sortable/filterable HTML report with recall/latency and CPU/RAM charts, scenario-level `benchmark-results.csv`, phase-level `benchmark-operations.csv`, `benchmark-resource-samples.csv`, and nested JSON under `artifacts/benchmarks`. MessagePack scenarios have a `-MessagePack` suffix; unchanged JSON scenario names preserve comparison with older schema-v5 JSON runs. Baselines must use schema v5 and have the same dataset, scenario, runtime, GC, OS/CPU and repetition fingerprint. A regression is flagged only when confidence intervals do not overlap and both relative and absolute thresholds are exceeded. Add `--fail-on-regression` to turn significant regressions or incompatible baselines into a non-zero exit code. Use `--server-indexes`, `--recall-thresholds`, `--storage-mode`, and `--wire-format` to narrow the matrix without changing the recorded fingerprint.
+
+## Interpret an E2E report
+
+- Compare only runs whose baseline fingerprint is compatible. A faster result on another CPU, dataset, dimension, index matrix, durability mode, runtime, or GC configuration is not an isolated product comparison.
+- For approximate indexes, choose the fastest tuning point that satisfies the required recall threshold. A low-latency point below the threshold is explicitly non-eligible.
+- Prefer the median and bootstrap confidence interval across forks. p95 requires at least 20 operation samples and p99 at least 100; `n/a` is evidence that the sample is insufficient, not zero latency.
+- Separate operation latency from phase duration and throughput. Mutation latency is labeled as a batch-of-16 latency where applicable, while throughput remains documents/s.
+- Treat `averageCpuCoreEquivalent` as used cores and `normalizedCpuUtilization` as the machine-normalized ratio. Sampled peaks are unavailable for phases too short to collect two observations.
+- Storage byte counters are logical instrumented reads/writes. `artifactSizeDeltaBytes` is directory growth and must not be compared with physical device IOPS or write amplification.
+- Expected queue/congestion/contractual rejections belong to their own counters. Only unexpected failures contribute to the main error rate.
+
+Cross-product comparisons require the same client location, dataset/truth set, recall target, concurrency model, durability and replication policy, warm state, network path, and cost envelope. Published vendor numbers that do not expose those controls are context, not a defensible head-to-head baseline.

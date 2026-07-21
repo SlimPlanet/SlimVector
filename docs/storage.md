@@ -1,5 +1,7 @@
 # Storage
 
+> [Documentation index](README.md) · [Architecture](architecture.md) · [Backup and restore](backup-restore.md)
+
 The filesystem engine is authoritative in both execution modes. Each collection owns a directory containing immutable operation segments, an atomic manifest, recoverable obsolete segments, and checksummed derived indexes.
 
 ## Layout
@@ -36,13 +38,15 @@ Obsolete and deleted collection directories remain recoverable filesystem materi
 
 ## Derived indexes
 
-`search-index-v1.bin` contains a MemoryPack snapshot of Flat or HNSW vector state, BM25 state, and metadata state. The storage wrapper adds a SHA-256 header. The inner snapshot records format version, effective vector kind, index settings, and a SHA-256 signature derived from sorted document ids and versions.
+`search-index-v1.bin` contains a MemoryPack snapshot of the active Flat, HNSW, IVF-Flat, IVF-PQ, or DiskANN-derived vector state together with BM25 and metadata state where applicable. The storage wrapper adds a SHA-256 header. The inner snapshot records format version, effective vector kind, index settings, and a SHA-256 signature derived from sorted document ids and versions.
 
 Derived data is never authoritative. A checksum failure is reported as storage corruption; a valid but stale/incompatible inner snapshot is ignored and rebuilt from segments. After the next mutation the current snapshot replaces it atomically.
 
 ## Filesystem assumptions
 
 Use a local durable filesystem that provides atomic rename within one volume. Do not put the live data directory on eventually consistent object storage. In cluster mode each node needs a distinct volume; never share one storage path between Raft nodes.
+
+`Storage:FlushToDisk=true` asks SlimVector to flush durable writes; keep it enabled outside disposable tests. The exported read/write byte and flush counters describe logical instrumented I/O, not proof that a particular device firmware has persisted data. Directory growth is an artifact-size measurement, not physical I/O throughput.
 
 ## Storage v1 to v2
 

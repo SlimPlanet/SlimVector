@@ -1,5 +1,7 @@
 # Backup and restore
 
+> [Documentation index](README.md) · [User guide](user-guide.md#make-the-local-deployment-durable) · [Security](security.md)
+
 Backups are scheduled when `Backup:Enabled=true`; `Backup:Interval` and `RetentionCount` control cadence and retained manifests. Manual operations use the protected administrator API described in [API](api.md).
 
 ## Format
@@ -68,6 +70,17 @@ curl -X POST http://localhost:8080/api/v1/admin/backups/backup-id/restore-collec
 ```
 
 Restore under a new name by setting `restoredName`; SlimVector assigns a new collection id. After restore, indexes cold-load from authoritative restored documents and are persisted on subsequent mutation.
+
+For a production restore:
+
+1. Fence public writers and record the current collection counts/topology.
+2. Verify the selected backup before invoking restore.
+3. Preserve the existing data volumes or take an infrastructure snapshot for rollback.
+4. Run the restore against a healthy target with sufficient capacity and wait for readiness.
+5. Compare collection/document counts and representative exact or hybrid queries.
+6. Re-enable traffic gradually while watching failures, index cold loads, memory, and Raft lag.
+
+For distributed storage v1→v2 migration, restore into a new v2 cluster rather than an existing live cluster; see [storage](storage.md#storage-v1-to-v2).
 
 ## Retention and PITR
 

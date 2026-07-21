@@ -1,5 +1,7 @@
 # Document extraction, chunking, and local embeddings
 
+> [Documentation index](README.md) · [Studio](studio.md) · [User guide](user-guide.md)
+
 `SlimVector.DocIngestor` is a storage-independent .NET 10 library. It turns a PDF, Word document, PowerPoint presentation, text file, or Markdown file into structured text sections, overlapping chunks, and normalized dense vectors. It can be reused without the Studio and does not depend on `SlimVector.Application`.
 
 ## Supported formats
@@ -91,6 +93,8 @@ foreach (EmbeddedChunk chunk in result.Chunks)
 - `IDocumentIngestionPipeline` is the single orchestration entry point.
 
 Stable `DocumentIngestionException.Code` values let a host map failures to its own HTTP or UI contract.
+
+The library returns chunks and vectors but does not silently write them to a database. A host chooses collection naming, metadata policy, batching, idempotency, and failure handling; Studio provides one complete reference workflow.
 
 ## Operational notes
 

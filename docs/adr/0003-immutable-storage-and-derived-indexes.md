@@ -9,7 +9,7 @@ Search indexes optimize different workloads and their formats evolve. Treating a
 
 ## Decision
 
-Keep collection operations in immutable, checksummed, sequence-ordered segments behind an atomic manifest. Represent deletion as a tombstone and periodically compact current state. Persist Flat/HNSW, BM25, and metadata structures together as a versioned, checksummed derived snapshot carrying the document id/version signature and index settings.
+Keep collection operations in immutable, checksummed, sequence-ordered segments behind an atomic manifest. Represent deletion as a tombstone and periodically compact current state. Persist the configured vector index, BM25, and metadata structures together as a versioned, checksummed derived snapshot carrying the document id/version signature and index settings.
 
 On an inner signature/configuration mismatch, rebuild from authoritative segments. On an outer checksum failure, surface corruption instead of silently hiding unexpected disk damage.
 

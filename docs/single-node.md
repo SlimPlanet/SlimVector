@@ -1,5 +1,7 @@
 # Single-node operation
 
+> [Documentation index](README.md) · [User guide](user-guide.md) · [Configuration](configuration.md)
+
 Single-node mode is the default. It uses the same deterministic command applier and storage engine as cluster mode but commits directly without opening Raft listeners.
 
 ## Local process
@@ -17,7 +19,7 @@ Or use Docker:
 docker compose -f compose.single-node.yml up --build
 ```
 
-The `/data` volume is the only required durable volume. Stop the process gracefully when possible; crash recovery is nevertheless tested through immutable segment replay and manifest reconciliation.
+The named `/data` volume is the only required live-data volume. Use a second independent volume if backups are enabled. Stop the process gracefully when possible; crash recovery is nevertheless tested through immutable segment replay and manifest reconciliation.
 
 ## Consistency
 
@@ -30,3 +32,5 @@ Collections are catalog entries, not permanent in-memory objects. The first docu
 ## Durability recommendation
 
 Keep `Storage:FlushToDisk=true` outside tests. A single node has no replica redundancy, so enable scheduled backups and monitor their last-success timestamp. Single-node availability and data durability are limited by the host and volume; use cluster mode when a local host failure must not interrupt service.
+
+The default public data routes do not authenticate application users. Put them behind a trusted TLS/authentication gateway in production. Enable administrator endpoints only when needed, inject their 32+ character key from a secret manager, and follow the [security checklist](security.md).

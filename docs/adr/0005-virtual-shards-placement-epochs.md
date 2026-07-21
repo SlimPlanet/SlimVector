@@ -17,4 +17,4 @@ Online movement is cataloged as `Active → Copying → CatchingUp → Switching
 
 ## Consequences
 
-The number of virtual shards can remain stable while their physical placement changes. Routers can detect stale decisions, snapshots do not duplicate unrelated shards, and a controller can resume an interrupted move from catalog state. Cross-group transactions remain deliberately unsupported. A future topology where nodes host only a subset of groups can reuse the same placement and move protocol.
+The number of virtual shards can remain stable while their physical placement changes. Routers can detect stale decisions, snapshots do not duplicate unrelated shards, and a controller can resume an interrupted move from catalog state. Cross-group transactions remain deliberately unsupported. [ADR 0006](0006-shared-nothing-data-group-placement.md) applies this protocol to a shared-nothing topology where nodes host only their assigned groups.

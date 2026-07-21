@@ -98,22 +98,21 @@ The API project publishes with Native AOT and `TrimMode=full`. The narrowly scop
 
 ## Documentation
 
-- [Architecture](docs/architecture.md)
-- [HTTP API](docs/api.md) and [configuration](docs/configuration.md)
-- [Storage](docs/storage.md) and [indexes](docs/indexes.md)
-- [Single-node](docs/single-node.md) and [three-node cluster](docs/cluster.md)
-- [Geographic replication](docs/geo-replication.md)
-- [Backup and restore](docs/backup-restore.md)
-- [Observability](docs/observability.md) and [troubleshooting](docs/troubleshooting.md)
-- [Document extraction, chunking, and local embeddings](docs/document-ingestion.md)
-- [SlimVector Studio](docs/studio.md)
-- [Testing, Native AOT smoke, and benchmarks](docs/testing.md)
+Start with the [user guide](docs/user-guide.md) for an end-to-end path from local installation to production operations. The [documentation index](docs/README.md) organizes all user, operator, architecture, and contributor references.
+
+- [HTTP API](docs/api.md), [.NET client](docs/user-guide.md#use-the-net-client), and [configuration](docs/configuration.md)
+- [Studio](docs/studio.md) and [document extraction, chunking, and local embeddings](docs/document-ingestion.md)
+- [Single-node](docs/single-node.md), [shared-nothing cluster](docs/cluster.md), and [geographic replication](docs/geo-replication.md)
+- [Indexes](docs/indexes.md), [storage](docs/storage.md), [backup and restore](docs/backup-restore.md)
+- [Security](docs/security.md), [observability](docs/observability.md), and [troubleshooting](docs/troubleshooting.md)
+- [Architecture and ADRs](docs/architecture.md), [testing, Native AOT smoke, and benchmarks](docs/testing.md)
 
 ## Projects
 
 - `SlimVector.Domain`: immutable domain model and validation
 - `SlimVector.Storage`: immutable segments, manifests, checksums, tombstones, compaction
 - `SlimVector.Indexing`: Flat SIMD/quantization, HNSW, IVF-Flat/PQ, DiskANN, BM25, metadata, rank fusion
+- `SlimVector.Protocol`: generated cross-project MessagePack contracts and formatters
 - `SlimVector.Raft`: deterministic commands, catalog/data groups, snapshots, safe dynamic membership
 - `SlimVector.Replication`: durable inter-zone outbox and signed receiver
 - `SlimVector.Application`: lazy collection lifecycle, batching, backups, use cases

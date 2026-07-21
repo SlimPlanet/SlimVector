@@ -1,5 +1,7 @@
 # Geographic replication and disaster recovery
 
+> [Documentation index](README.md) · [Cluster](cluster.md) · [Security](security.md)
+
 Geographic replication is a second layer above local consensus. It does not add remote members to a Raft group.
 
 ## Simulated two-zone deployment
@@ -13,6 +15,23 @@ The primary is `http://localhost:8090`; the read-only secondary is `http://local
 The primary commits locally, writes a versioned event into its filesystem outbox, and sends it in strict sequence to `/internal/geo/replicate`. Requests carry `X-SlimVector-Signature`, an HMAC-SHA256 of the exact MemoryPack body. The receiver persists the highest sequence and event receipt, applies through its local consensus coordinator, and returns an acknowledgement.
 
 Duplicate delivery with the same id/content is acknowledged without reapplying. A sequence gap is rejected so the sender retries the missing event first. Reuse of an event id with different content is a divergence and is rejected/metriced.
+
+The essential primary settings are `Enabled=true`, a secondary URL, a unique origin id, and a shared secret of at least 32 characters. The secondary sets `AcceptIncoming=true` and remains read-only:
+
+```json
+{
+  "GeoReplication": {
+    "Enabled": false,
+    "AcceptIncoming": true,
+    "ReadOnlySecondary": true,
+    "OriginId": "secondary-eu-west",
+    "SharedSecret": "<secret-distinct-from-admin-key>",
+    "StatePath": "/var/lib/slimvector/geo-replication"
+  }
+}
+```
+
+The two sites must use compatible collection definitions and vector dimensions. HMAC does not encrypt document content; use TLS or mTLS across the WAN.
 
 ## Modes and expected RPO/RTO
 
