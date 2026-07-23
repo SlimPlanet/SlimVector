@@ -56,8 +56,9 @@ Depuis la racine du dépôt :
 Le script :
 
 1. crée ou réutilise le cluster `slimvector-geo` ;
-2. construit `Dockerfile` avec Podman ;
-3. charge l'image dans les quatre nœuds Kind ;
+2. construit `Dockerfile` avec Podman sous le tag
+   `localhost/slimvector:kube-local` ;
+3. exporte une archive OCI temporaire et la charge dans les quatre nœuds Kind ;
 4. détecte et injecte les IP des trois workers dans les contrats Raft ;
 5. génère deux secrets locaux distincts pour l'administration et la
    géoréplication ;

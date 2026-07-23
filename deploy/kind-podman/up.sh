@@ -6,9 +6,10 @@ script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd "${script_directory}/../.." && pwd)"
 cluster_name="${SLIMVECTOR_KIND_CLUSTER:-slimvector-geo}"
 kube_context="kind-${cluster_name}"
-image_name="${SLIMVECTOR_IMAGE:-slimvector:kube-local}"
+image_name="${SLIMVECTOR_IMAGE:-localhost/slimvector:kube-local}"
 build_image="${SLIMVECTOR_BUILD_IMAGE:-true}"
 rollout_timeout="${SLIMVECTOR_ROLLOUT_TIMEOUT:-5m}"
+image_archive_directory=""
 
 export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -22,6 +23,20 @@ require_command() {
 kube() {
     kubectl --context "${kube_context}" "$@"
 }
+
+cleanup_image_archive() {
+    if [[ -n "${image_archive_directory}" ]]; then
+        if [[ -f "${image_archive_directory}/slimvector.oci.tar" ]]; then
+            unlink "${image_archive_directory}/slimvector.oci.tar"
+        fi
+        if [[ -d "${image_archive_directory}" ]]; then
+            rmdir "${image_archive_directory}"
+        fi
+        image_archive_directory=""
+    fi
+}
+
+trap cleanup_image_archive EXIT
 
 secret_value() {
     namespace="$1"
@@ -65,13 +80,6 @@ apply_member_config() {
     public_port_one="$5"
     public_port_two="$6"
 
-    extra_arguments=()
-    if [[ "${namespace}" == "slimvector-eu-west" ]]; then
-        extra_arguments+=(
-            "--from-literal=GeoReplication__SecondaryEndpoint=http://${worker_ip_zero}:8180"
-        )
-    fi
-
     kube --namespace "${namespace}" create configmap slimvector-members \
         "--from-literal=Raft__Members__0=http://${worker_ip_zero}:${raft_port}" \
         "--from-literal=Raft__Members__1=http://${worker_ip_one}:${raft_port}" \
@@ -91,7 +99,7 @@ apply_member_config() {
         "--from-literal=Raft__MemberCapacityBytes__0=5368709120" \
         "--from-literal=Raft__MemberCapacityBytes__1=5368709120" \
         "--from-literal=Raft__MemberCapacityBytes__2=5368709120" \
-        "${extra_arguments[@]}" \
+        "--from-literal=GeoReplication__SecondaryEndpoint=http://${worker_ip_zero}:8180" \
         --dry-run=client \
         --output yaml |
         kube apply --filename -
@@ -152,7 +160,15 @@ elif ! podman image exists "${image_name}"; then
 fi
 
 echo "Chargement de l'image dans les quatre nœuds Kind..."
-kind load docker-image "${image_name}" --name "${cluster_name}"
+image_archive_directory="$(mktemp -d "${TMPDIR:-/tmp}/slimvector-kind.XXXXXX")"
+podman save \
+    --format oci-archive \
+    --output "${image_archive_directory}/slimvector.oci.tar" \
+    "${image_name}"
+kind load image-archive \
+    "${image_archive_directory}/slimvector.oci.tar" \
+    --name "${cluster_name}"
+cleanup_image_archive
 
 kube apply --filename "${script_directory}/manifests/platform.yaml"
 apply_secrets

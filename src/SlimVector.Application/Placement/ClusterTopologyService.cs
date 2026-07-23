@@ -348,11 +348,14 @@ public sealed class ClusterTopologyService : IClusterTopologyService, IDisposabl
 public sealed class ClusterTopologyBootstrapService(
     IClusterTopologyService topology,
     IOptions<RaftOptions> raftOptions,
+    IOptions<ClusterMembershipOptions> membershipOptions,
     IOptions<DataPlacementOptions> placementOptions,
-    IOptions<StorageOptions> storageOptions) : Microsoft.Extensions.Hosting.IHostedService
+    IOptions<StorageOptions> storageOptions,
+    TimeProvider timeProvider) : Microsoft.Extensions.Hosting.IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         RaftOptions raft = raftOptions.Value;
         ClusterTopology current = await topology.GetAsync(cancellationToken).ConfigureAwait(false);
         if (current.Nodes.Length > 0)
@@ -455,7 +458,7 @@ public sealed class ClusterTopologyBootstrapService(
             CatalogNodeIds = nodes.Take(3).Select(static node => node.NodeId).ToArray(),
             DataGroups = groups,
         };
-        _ = await topology.ReplaceAsync(bootstrap, cancellationToken).ConfigureAwait(false);
+        await InstallClusterBootstrapAsync(bootstrap, raft, cancellationToken).ConfigureAwait(false);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -476,6 +479,38 @@ public sealed class ClusterTopologyBootstrapService(
         string fullPath = Path.GetFullPath(path);
         string root = Path.GetPathRoot(fullPath) ?? fullPath;
         return new DriveInfo(root).TotalSize;
+    }
+
+    private async Task InstallClusterBootstrapAsync(
+        ClusterTopology bootstrap,
+        RaftOptions raft,
+        CancellationToken cancellationToken)
+    {
+        long started = timeProvider.GetTimestamp();
+        TimeSpan timeout = membershipOptions.Value.OperationTimeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClusterTopology current = await topology.GetAsync(cancellationToken).ConfigureAwait(false);
+            if (current.Nodes.Length > 0)
+            {
+                return;
+            }
+
+            try
+            {
+                _ = await topology.ReplaceAsync(bootstrap, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (ConsensusUnavailableException) when (
+                !cancellationToken.IsCancellationRequested &&
+                timeProvider.GetElapsedTime(started) < timeout)
+            {
+                TimeSpan remaining = timeout - timeProvider.GetElapsedTime(started);
+                TimeSpan delay = raft.HeartbeatInterval < remaining ? raft.HeartbeatInterval : remaining;
+                await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private static string OffsetPort(string endpoint, int offset)

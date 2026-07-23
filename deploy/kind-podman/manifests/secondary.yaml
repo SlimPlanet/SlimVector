@@ -7,6 +7,8 @@ data:
   ASPNETCORE_URLS: "http://+:8180"
   Storage__Path: "/data"
   Storage__FlushToDisk: "true"
+  DiskAnn__Path: "/data/indexes/diskann"
+  Backup__Path: "/data/backups"
   Raft__Mode: "Cluster"
   Raft__PublicApiEndpoint: "http://127.0.0.1:8091"
   Raft__DataGroupCount: "2"
@@ -66,7 +68,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: slimvector
-          image: slimvector:kube-local
+          image: localhost/slimvector:kube-local
           imagePullPolicy: Never
           securityContext:
             allowPrivilegeEscalation: false

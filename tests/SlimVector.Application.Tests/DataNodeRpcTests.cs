@@ -13,6 +13,38 @@ namespace SlimVector.Application.Tests;
 public sealed class DataNodeRpcTests
 {
     [Fact]
+    public async Task EmptyTopologyBootstrapsThroughTheLocalCatalogRaftGroup()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        using FileSystemClusterTopologyStore topology = new(new StorageSettings
+        {
+            Path = directory.Path,
+            FlushToDisk = false,
+        });
+        await topology.InitializeAsync(cancellationToken);
+        BootstrapConsensus local = new();
+        RejectingRpcClient rpc = new();
+        SharedNothingConsensusCoordinator coordinator = new(
+            local,
+            new LocalGroups(),
+            topology,
+            rpc,
+            local,
+            new NoOpCatalogCache(),
+            Options.Create(new RaftOptions
+            {
+                Mode = ExecutionMode.Cluster,
+                NodeId = "node-1",
+            }));
+
+        await coordinator.ReplaceTopologyAsync(new ClusterTopology(), cancellationToken);
+
+        Assert.Equal(1, local.ReplicatedCommands);
+        Assert.Equal(0, rpc.Requests);
+    }
+
+    [Fact]
     public async Task StaleQueryPrefersTheHealthyReplicaWithTheLowestObservedLag()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
@@ -228,5 +260,102 @@ public sealed class DataNodeRpcTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(handler(request));
         }
+    }
+
+    private sealed class BootstrapConsensus : IConsensusCoordinator, ILocalRaftCommandReplicator
+    {
+        public event Action<Guid?>? StateChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public ExecutionMode Mode => ExecutionMode.Cluster;
+
+        public bool IsReady => false;
+
+        public int ReplicatedCommands { get; private set; }
+
+        public IReadOnlyList<RaftGroupStatus> GetStatuses() =>
+        [
+            new RaftGroupStatus
+            {
+                GroupId = MultiRaftNode.CatalogGroupId,
+                LocalEndpoint = "127.0.0.1:3262",
+                LeaderEndpoint = "127.0.0.1:3262",
+                IsLeader = true,
+                Term = 1,
+                LastAppliedIndex = 0,
+                LastCommittedIndex = 0,
+                AppliedCommandCount = 0,
+            },
+        ];
+
+        public ValueTask ReplicateLocalAsync(
+            RaftCommandEnvelope command,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ReplicatedCommands++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask StartAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public string GetDataGroupId(Guid collectionId) => "data-0";
+
+        public ValueTask UpsertCollectionAsync(
+            CollectionDefinition collection,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask DeleteCollectionAsync(
+            CollectionDefinition collection,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask AppendAsync(
+            CollectionDefinition collection,
+            IReadOnlyList<StorageOperation> operations,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask AppendBatchAsync(
+            IReadOnlyList<CollectionWrite> writes,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask ApplyReadBarrierAsync(
+            Guid? collectionId,
+            ReadConsistency consistency,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class RejectingRpcClient : IDataNodeRpcClient
+    {
+        public int Requests { get; private set; }
+
+        public ValueTask ReplicateAsync(
+            RaftCommandEnvelope command,
+            CancellationToken cancellationToken = default)
+        {
+            Requests++;
+            return ValueTask.FromException(new InvalidOperationException("The bootstrap must remain on local Raft."));
+        }
+    }
+
+    private sealed class NoOpCatalogCache : ICatalogCacheSynchronizer
+    {
+        public ValueTask RefreshAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask SeedNodeAsync(
+            string internalEndpoint,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
     }
 }

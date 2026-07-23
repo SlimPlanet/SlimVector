@@ -231,7 +231,11 @@ public sealed class SharedNothingConsensusCoordinator : IConsensusCoordinator
         }
 
         ClusterTopology topology = _topologyStore.GetSnapshot();
-        if (GetCatalogNodeIds(topology).Contains(_localNodeId, StringComparer.Ordinal))
+        bool localCatalogMember = GetCatalogNodeIds(topology).Contains(_localNodeId, StringComparer.Ordinal) ||
+            topology.Nodes.Length == 0 &&
+            _local.GetStatuses().Any(status =>
+                string.Equals(status.GroupId, MultiRaftNode.CatalogGroupId, StringComparison.Ordinal));
+        if (localCatalogMember)
         {
             try
             {
