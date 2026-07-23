@@ -6,6 +6,7 @@
   <meta name="description" content="SlimVector Studio — ingestion documentaire et exploration vectorielle locale.">
   <title>SlimVector Studio</title>
   <link rel="stylesheet" href="/styles.css">
+  <script src="/msgpack.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -153,6 +154,7 @@
               </div>
               <input type="hidden" name="mode" value="hybrid">
               <label class="query-box"><span>Votre requête</span><textarea name="query" rows="4" placeholder="Ex. Comment fonctionne la réplication géographique ?"></textarea><div class="query-hint"><span><kbd>⌘</kbd><kbd>↵</kbd> pour lancer</span><span id="query-model-hint">Vectorisation locale 384d</span></div></label>
+              <fieldset class="transport-selector"><legend>Format de transport</legend><div><strong>Corps de la requête et de la réponse</strong><small>MessagePack réduit la taille des vecteurs sur le réseau.</small></div><div class="transport-options"><label><input type="radio" name="wireFormat" value="json" checked><span>JSON</span></label><label><input type="radio" name="wireFormat" value="messagepack"><span>MessagePack</span></label></div></fieldset>
               <div class="query-options">
                 <label class="field"><span>Nombre de résultats</span><input type="number" name="limit" value="10" min="1" max="1000"></label>
                 <label class="field"><span>Cohérence</span><select name="consistency"><option value="leader">Chef de groupe</option><option value="linearizable">Linéarisable</option><option value="stale">Potentiellement ancien / rapide</option></select></label>

@@ -1,6 +1,8 @@
+using System.Buffers;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using MessagePack;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +26,7 @@ public sealed class StudioIntegrationTests
 
             string html = await client.GetStringAsync("/", cancellationToken);
             string javascript = await client.GetStringAsync("/app.js", cancellationToken);
+            string messagePack = await client.GetStringAsync("/msgpack.js", cancellationToken);
             using JsonDocument bootstrap = await ReadJsonAsync(client, "/studio/api/bootstrap", cancellationToken);
 
             Assert.Contains("SlimVector Studio", html, StringComparison.Ordinal);
@@ -35,9 +38,15 @@ public sealed class StudioIntegrationTests
             Assert.Contains("name=\"targetTokens\" value=\"500\"", html, StringComparison.Ordinal);
             Assert.Contains("name=\"maximumTokens\" value=\"600\"", html, StringComparison.Ordinal);
             Assert.Contains("porté à 1 200", html, StringComparison.Ordinal);
+            Assert.Contains("name=\"wireFormat\" value=\"messagepack\"", html, StringComparison.Ordinal);
+            Assert.Contains("MessagePack réduit la taille", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Query lab", html, StringComparison.Ordinal);
             Assert.Contains("fragments produits", javascript, StringComparison.Ordinal);
             Assert.Contains("Le mode nœud unique", javascript, StringComparison.Ordinal);
+            Assert.Contains("application/vnd.msgpack", javascript, StringComparison.Ordinal);
+            Assert.Contains("SlimVectorMessagePack.encode", javascript, StringComparison.Ordinal);
+            Assert.Contains("initializeSlimVectorMessagePack", messagePack, StringComparison.Ordinal);
+            Assert.Contains("Object.freeze({ encode, decode })", messagePack, StringComparison.Ordinal);
             Assert.DoesNotContain("chunks produits", javascript, StringComparison.Ordinal);
             JsonElement collection = Assert.Single(bootstrap.RootElement.GetProperty("collections").EnumerateArray());
             Assert.Equal("documents", collection.GetProperty("definition").GetProperty("name").GetString());
@@ -65,6 +74,79 @@ public sealed class StudioIntegrationTests
             Assert.Equal(
                 "Un contenu multipart/form-data est requis.",
                 problem.RootElement.GetProperty("detail").GetString());
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task StudioSearchNegotiatesMessagePackRequestsResponsesAndProblems()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string root = TestRoot();
+        try
+        {
+            await using WebApplicationFactory<Program> factory = CreateFactory(root);
+            using HttpClient client = factory.CreateClient();
+            using StringContent mutation = new(
+                """
+                {
+                  "kind": "upsert",
+                  "atomic": true,
+                  "documents": [
+                    {
+                      "id": "transport:1",
+                      "text": "MessagePack binary transport for vector search",
+                      "autoVectorize": true,
+                      "metadata": { "transport": "messagepack" }
+                    }
+                  ]
+                }
+                """,
+                Encoding.UTF8,
+                "application/json");
+            using HttpResponseMessage mutated = await client.PostAsync(
+                "/studio/api/collections/documents/documents/mutate",
+                mutation,
+                cancellationToken);
+            mutated.EnsureSuccessStatusCode();
+
+            using ByteArrayContent query = new(CreateMessagePackSearchRequest());
+            query.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.msgpack");
+            using HttpRequestMessage request = new(
+                HttpMethod.Post,
+                "/studio/api/collections/documents/search")
+            {
+                Content = query,
+            };
+            request.Headers.Accept.ParseAdd("application/vnd.msgpack");
+            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            Assert.Equal("application/vnd.msgpack", response.Content.Headers.ContentType?.MediaType);
+            using JsonDocument result = MessagePackAsJson(
+                await response.Content.ReadAsByteArrayAsync(cancellationToken));
+            Assert.True(result.RootElement.GetProperty("queryWasVectorized").GetBoolean());
+            Assert.Equal("transport:1", Assert.Single(
+                result.RootElement.GetProperty("hits").EnumerateArray()).GetProperty("id").GetString());
+
+            using ByteArrayContent invalidContent = new([0xc1]);
+            invalidContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.msgpack");
+            using HttpRequestMessage invalidRequest = new(
+                HttpMethod.Post,
+                "/studio/api/collections/documents/search")
+            {
+                Content = invalidContent,
+            };
+            invalidRequest.Headers.Accept.ParseAdd("application/vnd.msgpack");
+            using HttpResponseMessage invalid = await client.SendAsync(invalidRequest, cancellationToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            Assert.Equal("application/vnd.msgpack", invalid.Content.Headers.ContentType?.MediaType);
+            using JsonDocument problem = MessagePackAsJson(
+                await invalid.Content.ReadAsByteArrayAsync(cancellationToken));
+            Assert.Equal("Requête invalide", problem.RootElement.GetProperty("title").GetString());
+            Assert.Equal("invalid_request", problem.RootElement.GetProperty("code").GetString());
         }
         finally
         {
@@ -297,6 +379,46 @@ public sealed class StudioIntegrationTests
             await response.Content.ReadAsStreamAsync(cancellationToken),
             cancellationToken: cancellationToken);
     }
+
+    private static byte[] CreateMessagePackSearchRequest()
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        MessagePackWriter writer = new(buffer);
+        writer.WriteMapHeader(11);
+        writer.Write("query");
+        writer.Write("binary transport");
+        writer.Write("mode");
+        writer.Write("hybrid");
+        writer.Write("limit");
+        writer.Write(5);
+        writer.Write("consistency");
+        writer.Write("leader");
+        writer.Write("vectorWeight");
+        writer.Write(0.5);
+        writer.Write("textWeight");
+        writer.Write(0.5);
+        writer.Write("filter");
+        writer.WriteMapHeader(3);
+        writer.Write("operator");
+        writer.Write("equal");
+        writer.Write("field");
+        writer.Write("transport");
+        writer.Write("value");
+        writer.Write("messagepack");
+        writer.Write("includeText");
+        writer.Write(true);
+        writer.Write("includeMetadata");
+        writer.Write(true);
+        writer.Write("includeScores");
+        writer.Write(true);
+        writer.Write("includeVector");
+        writer.Write(false);
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static JsonDocument MessagePackAsJson(byte[] payload) =>
+        JsonDocument.Parse(MessagePackSerializer.ConvertToJson(payload));
 
     private static string TestRoot() => Path.Combine(Path.GetTempPath(), "SlimVector.Studio.Tests", Guid.NewGuid().ToString("N"));
 

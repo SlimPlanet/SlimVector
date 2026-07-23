@@ -58,6 +58,12 @@ The query lab exposes every `SearchMode`:
 
 Top K, leader/linearizable/stale read consistency, returned text/vector/metadata/score fields, and scalar metadata filters are configurable. Results display fused score, vector and text ranks, source metadata, elapsed database time, and optional full vectors.
 
+The transport selector sends the search request and receives its response as
+either JSON or MessagePack. JSON remains the readable default. MessagePack uses
+`application/vnd.msgpack`, camel-case map keys, generated .NET contracts, and
+the untrusted-data security profile. Encoding and decoding run locally in the
+browser; the Studio does not load a JavaScript codec from a CDN.
+
 ### Documents and collections
 
 The document explorer pages through stored records, optionally loads full vectors, shows metadata/version/update time, and performs atomic multi-delete. The manual mutation dialog exposes add, upsert, update, and delete with either a supplied JSON vector or local automatic vectorization.

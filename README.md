@@ -46,6 +46,7 @@ Open `http://localhost:5187`. The Studio starts an embedded single-node SlimVect
 - recursive, paragraph, or sentence chunking (500-token target, 600-token default cap, configurable up to 1,200);
 - fully local multilingual ONNX embeddings with automatic ARM64/AVX2 model selection;
 - vector, BM25, hybrid, and metadata-only search with consistency and returned-field controls;
+- selectable JSON or MessagePack transport in the Studio query laboratory;
 - collection CRUD and HNSW settings, document inspection and manual batch mutations;
 - Raft/write/search telemetry plus backup, verification, and restore workflows.
 

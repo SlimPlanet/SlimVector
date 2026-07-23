@@ -62,18 +62,12 @@ app.Use(async (context, next) =>
             ArgumentException => (StatusCodes.Status400BadRequest, "invalid_argument", "Argument invalide"),
             _ => (StatusCodes.Status500InternalServerError, "studio_error", "Échec de SlimVector Studio"),
         };
-        context.Response.StatusCode = status;
-        await Results.Problem(
-            detail: exception.Message,
-            instance: context.Request.Path,
-            statusCode: status,
-            title: title,
-            type: $"https://slimvector.dev/problems/{code}",
-            extensions: new Dictionary<string, object?>
-            {
-                ["code"] = code,
-                ["traceId"] = context.TraceIdentifier,
-            }).ExecuteAsync(context).ConfigureAwait(false);
+        await StudioSerialization.WriteProblemAsync(
+            context,
+            status,
+            code,
+            title,
+            exception.Message).ConfigureAwait(false);
     }
 });
 app.UseDefaultFiles();

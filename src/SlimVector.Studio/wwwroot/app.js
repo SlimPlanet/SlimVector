@@ -13,6 +13,7 @@
     documentTotal: 0,
     selectedDocuments: new Set(),
     chunkingDefaultsApplied: false,
+    lastSearchWireFormat: 'json',
   };
 
   const escapeHtml = (value) => String(value ?? '')
@@ -58,24 +59,38 @@
     delete: 'suppression',
   };
   const translated = (labels, value) => labels[value] || value;
+  const messagePackMediaType = 'application/vnd.msgpack';
 
   async function api(path, options = {}) {
-    const headers = new Headers(options.headers || {});
-    if (options.body && !(options.body instanceof FormData) && typeof options.body !== 'string') {
-      headers.set('Content-Type', 'application/json');
-      options.body = JSON.stringify(options.body);
+    const requestOptions = { ...options };
+    const wireFormat = requestOptions.wireFormat || 'json';
+    delete requestOptions.wireFormat;
+    const headers = new Headers(requestOptions.headers || {});
+    if (requestOptions.body && !(requestOptions.body instanceof FormData) && typeof requestOptions.body !== 'string') {
+      if (wireFormat === 'messagepack') {
+        headers.set('Content-Type', messagePackMediaType);
+        headers.set('Accept', messagePackMediaType);
+        requestOptions.body = SlimVectorMessagePack.encode(requestOptions.body);
+      } else {
+        headers.set('Content-Type', 'application/json');
+        requestOptions.body = JSON.stringify(requestOptions.body);
+      }
     }
-    const response = await fetch(`/studio/api${path}`, { ...options, headers });
+    const response = await fetch(`/studio/api${path}`, { ...requestOptions, headers });
+    const contentType = response.headers.get('content-type') || '';
+    let payload = null;
+    if (response.status !== 204) {
+      if (contentType.includes(messagePackMediaType)) payload = SlimVectorMessagePack.decode(await response.arrayBuffer());
+      else if (contentType.includes('json')) payload = await response.json();
+    }
     if (!response.ok) {
-      let problem;
-      try { problem = await response.json(); } catch { problem = {}; }
+      const problem = payload || {};
       const error = new Error(problem.detail || problem.title || `Erreur HTTP ${response.status}`);
       error.code = problem.code || problem.extensions?.code || 'http_error';
       error.status = response.status;
       throw error;
     }
-    if (response.status === 204 || !response.headers.get('content-type')?.includes('json')) return null;
-    return response.json();
+    return payload;
   }
 
   function toast(title, message = '', type = 'success') {
@@ -316,6 +331,7 @@
     try { filter = parseFilter(form); } catch (error) { toast('Filtre invalide', error.message, 'error'); return; }
     const vectorWeight = Number(form.elements.vectorWeight.value) / 100;
     const textWeight = Number(form.elements.textWeight.value) / 100;
+    const wireFormat = form.elements.wireFormat.value;
     const body = {
       query,
       mode: state.searchMode,
@@ -329,9 +345,10 @@
       includeScores: form.elements.includeScores.checked,
       includeVector: form.elements.includeVector.checked,
     };
+    state.lastSearchWireFormat = wireFormat;
     $('#search-results').innerHTML = '<div class="empty-state tall"><div class="loader-orbit"><span></span><span></span><i></i></div><h2>Recherche en cours</h2><p>Interrogation des index persistants…</p></div>';
     try {
-      const result = await api(`/collections/${encodeURIComponent(state.collection)}/search`, { method: 'POST', body });
+      const result = await api(`/collections/${encodeURIComponent(state.collection)}/search`, { method: 'POST', body, wireFormat });
       renderSearchResults(result);
     } catch (error) {
       $('#search-results').innerHTML = `<div class="empty-state tall"><svg style="color:var(--danger)"><use href="#i-x"/></svg><h2>Requête refusée</h2><p>${escapeHtml(error.message)}</p></div>`;
@@ -345,7 +362,8 @@
       target.innerHTML = '<div class="empty-state tall"><svg><use href="#i-search"/></svg><h2>Aucun résultat</h2><p>Élargissez votre requête ou retirez le filtre de métadonnées.</p></div>';
       return;
     }
-    target.innerHTML = `<div class="results-header"><div><strong>${result.hits.length} résultat${result.hits.length > 1 ? 's' : ''}</strong><small>${result.queryWasVectorized ? 'Requête vectorisée localement · ' : ''}${escapeHtml(translated(searchModeLabels, state.searchMode))}</small></div><span class="query-time">${(result.tookMicroseconds / 1000).toFixed(2)} ms</span></div><div class="hit-list">${result.hits.map((hit, index) => {
+    const wireFormat = state.lastSearchWireFormat === 'messagepack' ? 'MessagePack' : 'JSON';
+    target.innerHTML = `<div class="results-header"><div><strong>${result.hits.length} résultat${result.hits.length > 1 ? 's' : ''}</strong><small>${result.queryWasVectorized ? 'Requête vectorisée localement · ' : ''}${escapeHtml(translated(searchModeLabels, state.searchMode))} · transport ${wireFormat}</small></div><span class="query-time">${(result.tookMicroseconds / 1000).toFixed(2)} ms</span></div><div class="hit-list">${result.hits.map((hit, index) => {
       const metadata = hit.metadata || {};
       const chips = Object.entries(metadata).slice(0, 4).map(([key, value]) => `<span class="meta-chip">${escapeHtml(key)}: ${escapeHtml(shorten(Array.isArray(value) ? value.join(', ') : value, 35))}</span>`).join('');
       return `<article class="hit-card"><div class="hit-top"><span class="hit-id"><b style="color:var(--muted-2);margin-right:7px">#${index + 1}</b>${escapeHtml(hit.id)}</span>${hit.score == null ? '' : `<span class="score-pill">${Number(hit.score).toFixed(5)}</span>`}</div>${hit.text == null ? '' : `<p class="hit-text">${escapeHtml(hit.text)}</p>`}<div class="hit-bottom"><div class="rank-list">${hit.vectorRank ? `<span>vecteur #${hit.vectorRank}</span>` : ''}${hit.textRank ? `<span>BM25 #${hit.textRank}</span>` : ''}</div><div class="meta-chips">${chips}</div></div>${Object.keys(metadata).length || hit.vector ? `<details class="hit-details"><summary>Données complètes</summary><pre class="json-block">${escapeHtml(JSON.stringify({ metadata, vector: hit.vector }, null, 2))}</pre></details>` : ''}</article>`;

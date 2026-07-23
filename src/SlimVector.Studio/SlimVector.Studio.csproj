@@ -6,5 +6,7 @@
   <ItemGroup>
     <ProjectReference Include="../SlimVector.Application/SlimVector.Application.csproj" />
     <ProjectReference Include="../SlimVector.DocIngestor/SlimVector.DocIngestor.csproj" />
+    <ProjectReference Include="../SlimVector.Protocol/SlimVector.Protocol.csproj" />
+    <PackageReference Include="MessagePack" />
   </ItemGroup>
 </Project>

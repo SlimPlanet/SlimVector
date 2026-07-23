@@ -27,8 +27,12 @@ public static class StudioEndpoints
             studio.DeleteCollectionAsync(name, cancellationToken));
 
         api.MapPost("/ingest", IngestAsync).DisableAntiforgery();
-        api.MapPost("/collections/{name}/search", static (string name, SearchInput input, SlimVectorStudioService studio, CancellationToken cancellationToken) =>
-            studio.SearchAsync(name, input, cancellationToken));
+        api.MapPost("/collections/{name}/search", SearchAsync)
+            .Accepts<SearchInput>("application/json", StudioSerialization.MessagePackMediaType)
+            .Produces<StudioSearchResponse>(
+                StatusCodes.Status200OK,
+                "application/json",
+                StudioSerialization.MessagePackMediaType);
         api.MapGet("/collections/{name}/documents", static (
             string name,
             int? offset,
@@ -70,6 +74,18 @@ public static class StudioEndpoints
             SlimVectorStudioService studio,
             CancellationToken cancellationToken) => studio.RestoreFullAsync(backupId, input, cancellationToken));
         return endpoints;
+    }
+
+    private static async Task<IResult> SearchAsync(
+        string name,
+        HttpRequest request,
+        SlimVectorStudioService studio,
+        CancellationToken cancellationToken)
+    {
+        SearchInput input = await StudioSerialization.ReadSearchAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+        StudioSearchResponse result = await studio.SearchAsync(name, input, cancellationToken).ConfigureAwait(false);
+        return StudioSerialization.Ok(result);
     }
 
     private static async Task<IResult> IngestAsync(

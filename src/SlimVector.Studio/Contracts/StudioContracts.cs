@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MessagePack;
 using SlimVector.Application;
 using SlimVector.Application.Backups;
 using SlimVector.Application.Writes;
@@ -220,29 +221,41 @@ public sealed record SearchInput
     public bool IncludeScores { get; init; } = true;
 }
 
+[MessagePackObject]
 public sealed record SearchHitResponse
 {
+    [Key("id")]
     public required string Id { get; init; }
 
+    [Key("text")]
     public string? Text { get; init; }
 
+    [Key("vector")]
     public float[]? Vector { get; init; }
 
+    [Key("metadata")]
     public Dictionary<string, JsonElement>? Metadata { get; init; }
 
+    [Key("score")]
     public double? Score { get; init; }
 
+    [Key("vectorRank")]
     public int? VectorRank { get; init; }
 
+    [Key("textRank")]
     public int? TextRank { get; init; }
 }
 
+[MessagePackObject]
 public sealed record StudioSearchResponse
 {
+    [Key("hits")]
     public required IReadOnlyList<SearchHitResponse> Hits { get; init; }
 
+    [Key("tookMicroseconds")]
     public required long TookMicroseconds { get; init; }
 
+    [Key("queryWasVectorized")]
     public required bool QueryWasVectorized { get; init; }
 }
 
