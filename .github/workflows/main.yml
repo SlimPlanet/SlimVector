@@ -14,7 +14,8 @@ concurrency:
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   DOTNET_NOLOGO: "1"
-  IMAGE_NAME: ghcr.io/slimplanet/slimvector
+  API_IMAGE_NAME: ghcr.io/slimplanet/slimvector
+  STUDIO_IMAGE_NAME: ghcr.io/slimplanet/slimvector-studio
 
 permissions:
   contents: read
@@ -146,7 +147,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   container:
-    name: Build and publish container
+    name: Build and publish containers
     needs: version
     runs-on: ubuntu-latest
     permissions:
@@ -155,7 +156,8 @@ jobs:
       attestations: write
       id-token: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      api_digest: ${{ steps.build_api.outputs.digest }}
+      studio_digest: ${{ steps.build_studio.outputs.digest }}
     steps:
       - name: Check out tested commit
         uses: actions/checkout@v6
@@ -177,11 +179,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate container metadata
-        id: meta
+      - name: Generate API container metadata
+        id: meta_api
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ env.API_IMAGE_NAME }}
           flavor: latest=false
           tags: |
             type=raw,value=${{ needs.version.outputs.version }}
@@ -197,39 +199,84 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
 
-      - name: Build and publish image
-        id: build
+      - name: Build and publish API image
+        id: build_api
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta_api.outputs.tags }}
+          labels: ${{ steps.meta_api.outputs.labels }}
+          annotations: ${{ steps.meta_api.outputs.annotations }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
 
-      - name: Attest image provenance
+      - name: Generate Studio container metadata
+        id: meta_studio
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.STUDIO_IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.channel }},enable=${{ github.event_name == 'push' && needs.version.outputs.channel != 'release' && needs.version.outputs.channel != 'default' }}
+            type=raw,value=dev,enable=${{ github.event_name == 'push' && needs.version.outputs.channel == 'default' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && needs.version.outputs.channel == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.release_tag }},enable=${{ github.event_name == 'push' && needs.version.outputs.channel == 'release' }}
+            type=semver,pattern={{major}},value=${{ needs.version.outputs.release_tag }},enable=${{ github.event_name == 'push' && needs.version.outputs.channel == 'release' }}
+          labels: |
+            org.opencontainers.image.title=SlimVector Studio
+            org.opencontainers.image.description=Local document ingestion and vector search Studio
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build and publish Studio image
+        id: build_studio
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.Studio
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta_studio.outputs.tags }}
+          labels: ${{ steps.meta_studio.outputs.labels }}
+          annotations: ${{ steps.meta_studio.outputs.annotations }}
+          cache-from: type=gha,scope=studio
+          cache-to: type=gha,mode=max,scope=studio
+
+      - name: Attest API image provenance
         if: github.event_name == 'push'
         uses: actions/attest@v4
         with:
-          subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-name: ${{ env.API_IMAGE_NAME }}
+          subject-digest: ${{ steps.build_api.outputs.digest }}
           push-to-registry: true
 
-      - name: Add published image to summary
+      - name: Attest Studio image provenance
+        if: github.event_name == 'push'
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.STUDIO_IMAGE_NAME }}
+          subject-digest: ${{ steps.build_studio.outputs.digest }}
+          push-to-registry: true
+
+      - name: Add published images to summary
         if: github.event_name == 'push'
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          API_DIGEST: ${{ steps.build_api.outputs.digest }}
+          STUDIO_DIGEST: ${{ steps.build_studio.outputs.digest }}
         run: |
           {
-            echo "### Published container"
-            echo "- Image: \`${IMAGE_NAME}:${VERSION}\`"
-            echo "- Digest: \`${DIGEST}\`"
+            echo "### Published containers"
+            echo "- API: \`${API_IMAGE_NAME}:${VERSION}\`"
+            echo "- API digest: \`${API_DIGEST}\`"
+            echo "- Studio: \`${STUDIO_IMAGE_NAME}:${VERSION}\`"
+            echo "- Studio digest: \`${STUDIO_DIGEST}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   release:
@@ -250,7 +297,7 @@ jobs:
         run: |
           mkdir -p release-assets
           archive="release-assets/slimvector-docker-${VERSION}.tar.gz"
-          tar -czf "$archive" Dockerfile .dockerignore compose.single-node.yml compose.cluster.yml compose.geo.yml
+          tar -czf "$archive" Dockerfile Dockerfile.Studio .dockerignore compose.single-node.yml compose.cluster.yml compose.geo.yml
           sha256sum "$archive" > "${archive}.sha256"
 
       - name: Create release and upload Docker assets
@@ -262,22 +309,25 @@ jobs:
           generate_release_notes: true
           make_latest: true
           body: |
-            ## Docker image
+            ## Docker images
 
-            Multi-architecture image (`linux/amd64`, `linux/arm64`) published on GitHub Container Registry:
+            Multi-architecture images (`linux/amd64`, `linux/arm64`) published on GitHub Container Registry:
 
             ```bash
-            docker pull ${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
+            docker pull ${{ env.API_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+            docker pull ${{ env.STUDIO_IMAGE_NAME }}:${{ needs.version.outputs.version }}
             ```
 
-            Immutable reference:
+            Immutable references:
 
             ```text
-            ${{ env.IMAGE_NAME }}@${{ needs.container.outputs.digest }}
+            ${{ env.API_IMAGE_NAME }}@${{ needs.container.outputs.api_digest }}
+            ${{ env.STUDIO_IMAGE_NAME }}@${{ needs.container.outputs.studio_digest }}
             ```
 
-            [Open the container package](${{ github.server_url }}/${{ github.repository }}/pkgs/container/slimvector).
-            The attached archive contains the released `Dockerfile`, `.dockerignore`, and Compose definitions; its SHA-256 checksum is attached alongside it.
+            [Open the API container package](${{ github.server_url }}/${{ github.repository }}/pkgs/container/slimvector) or
+            [the Studio container package](${{ github.server_url }}/${{ github.repository }}/pkgs/container/slimvector-studio).
+            The attached archive contains the released Dockerfiles, `.dockerignore`, and Compose definitions; its SHA-256 checksum is attached alongside it.
           files: |
             release-assets/slimvector-docker-${{ needs.version.outputs.version }}.tar.gz
             release-assets/slimvector-docker-${{ needs.version.outputs.version }}.tar.gz.sha256

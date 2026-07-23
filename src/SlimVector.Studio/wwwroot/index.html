@@ -126,10 +126,11 @@
               <label class="field"><span>Collection cible</span><select id="ingest-collection" name="collection"></select></label>
               <label class="field"><span>Stratégie de découpage</span><select name="strategy"><option value="recursive">Récursive</option><option value="paragraph">Paragraphes</option><option value="sentence">Phrases</option></select><small>La stratégie récursive préserve au mieux la structure.</small></label>
               <div class="field-grid three">
-                <label class="field"><span>Cible</span><input type="number" name="targetTokens" value="90" min="8" max="120"></label>
-                <label class="field"><span>Maximum</span><input type="number" name="maximumTokens" value="120" min="8" max="126"></label>
-                <label class="field"><span>Chevauchement</span><input type="number" name="overlapTokens" value="18" min="0" max="89"></label>
+                <label class="field"><span>Cible</span><input type="number" name="targetTokens" value="500" min="8" max="1200"></label>
+                <label class="field"><span>Maximum</span><input type="number" name="maximumTokens" value="600" min="8" max="1200"></label>
+                <label class="field"><span>Chevauchement</span><input type="number" name="overlapTokens" value="100" min="0" max="1199"></label>
               </div>
+              <p class="form-note">Cible par défaut : 500 jetons, plafond : 600. Le plafond peut être porté à 1 200 ; l’encodage vectoriel couvre alors tout le fragment par fenêtres.</p>
               <label class="field"><span>Métadonnées personnalisées</span><textarea name="metadata" rows="5" spellcheck="false" placeholder='{"équipe":"R&D","confidentiel":false}'></textarea></label>
               <div class="toggle-row"><div><strong>Remplacer la version précédente</strong><small>Même nom de fichier dans la collection</small></div><label class="switch"><input type="checkbox" name="replaceExisting" checked><span></span></label></div>
               <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Chaque lot réussit ou échoue ensemble</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>

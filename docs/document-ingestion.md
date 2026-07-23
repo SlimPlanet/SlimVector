@@ -32,7 +32,7 @@ Each `TextChunk` contains its stable sequence, text, estimated token count, cont
 - merges a very small final chunk when the merged result remains bounded;
 - produces deterministic output for identical text and options.
 
-The defaults target 90 estimated tokens, cap at 120, and overlap by 18. These values leave room for the embedding model's 128-token sequence limit. The ONNX generator also performs a final safe truncation and preserves the last special token.
+The reusable library defaults target 90 estimated tokens, cap at 120, and overlap by 18. The Studio deliberately overrides them with a 500-token target, a 600-token cap, and 100-token overlap, and lets operators raise the cap to 1,200.
 
 ## Embedding model
 
@@ -46,7 +46,7 @@ The library downloads only two files on first use: `tokenizer.json` and one ONNX
 | x64 with AVX2 | `model_quint8_avx2.onnx` |
 | other supported CPU | `model.onnx` portable fallback |
 
-Tokenization uses the native Hugging Face tokenizer bindings for Windows x64/ARM64, Linux x64/ARM64, and macOS x64/ARM64. ONNX Runtime performs batched CPU inference. The implementation applies attention-mask-aware mean pooling to `last_hidden_state` and L2-normalizes every vector, so cosine and dot-product behavior is stable.
+Tokenization uses the native Hugging Face tokenizer bindings for Windows x64/ARM64, Linux x64/ARM64, and macOS x64/ARM64. ONNX Runtime performs batched CPU inference. Inputs longer than the model's 128-token context are split into content-preserving token windows; their normalized embeddings are combined with content-token weighting and normalized again. The implementation applies attention-mask-aware mean pooling to `last_hidden_state`, so cosine and dot-product behavior remains stable without dropping the tail of a large chunk.
 
 Downloads use an immutable revision URL and an atomic temporary file. A partial download is removed and never treated as a ready model. Set `AutoDownload = false` to enforce a pre-provisioned offline cache.
 

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using SlimVector.DocIngestor.Models;
 using SlimVector.Studio.Contracts;
 using SlimVector.Studio.Services;
@@ -74,7 +75,7 @@ public static class StudioEndpoints
     private static async Task<IResult> IngestAsync(
         HttpRequest request,
         SlimVectorStudioService studio,
-        StudioOptions studioOptions,
+        IOptions<StudioOptions> studioOptions,
         CancellationToken cancellationToken)
     {
         if (!request.HasFormContentType)
@@ -100,20 +101,21 @@ public static class StudioEndpoints
         ChunkingOptions chunking = new()
         {
             Strategy = strategy,
-            TargetTokens = ParseInt(form["targetTokens"], 90),
-            MaximumTokens = ParseInt(form["maximumTokens"], 120),
-            OverlapTokens = ParseInt(form["overlapTokens"], 18),
+            TargetTokens = ParseInt(form["targetTokens"], studioOptions.Value.Chunking.TargetTokens),
+            MaximumTokens = ParseInt(form["maximumTokens"], studioOptions.Value.Chunking.MaximumTokens),
+            OverlapTokens = ParseInt(form["overlapTokens"], studioOptions.Value.Chunking.OverlapTokens),
             MinimumChunkTokens = ParseInt(form["minimumChunkTokens"], 8),
         };
         chunking.Validate();
+        ValidateMaximumChunkTokens(chunking.MaximumTokens);
         Dictionary<string, JsonElement> metadata = ParseMetadata(form["metadata"]);
         List<IngestResponse> results = new(form.Files.Count);
         foreach (IFormFile file in form.Files)
         {
-            if (file.Length > studioOptions.MaximumUploadBytes)
+            if (file.Length > studioOptions.Value.MaximumUploadBytes)
             {
                 throw new BadHttpRequestException(
-                    $"Le fichier « {file.FileName} » dépasse la limite d’envoi de {studioOptions.MaximumUploadBytes} octets.",
+                    $"Le fichier « {file.FileName} » dépasse la limite d’envoi de {studioOptions.Value.MaximumUploadBytes} octets.",
                     StatusCodes.Status413PayloadTooLarge);
             }
 
@@ -134,6 +136,16 @@ public static class StudioEndpoints
         }
 
         return Results.Ok(results);
+    }
+
+    private static void ValidateMaximumChunkTokens(int maximumTokens)
+    {
+        if (maximumTokens > StudioOptions.MaximumChunkTokens)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumTokens),
+                $"La taille maximale d’un fragment ne peut pas dépasser {StudioOptions.MaximumChunkTokens} jetons.");
+        }
     }
 
     private static int ParseInt(string? value, int fallback) =>

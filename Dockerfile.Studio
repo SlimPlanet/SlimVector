@@ -1,30 +1,30 @@
 # syntax=docker/dockerfile:1.7
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang llvm zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
 COPY . .
 ARG TARGETARCH
 RUN arch="$TARGETARCH"; \
     if [ "$arch" = "amd64" ]; then arch="x64"; fi; \
     rid="linux-$arch"; \
-    dotnet restore src/SlimVector.Api/SlimVector.Api.csproj -r "$rid"; \
-    dotnet publish src/SlimVector.Api/SlimVector.Api.csproj \
+    dotnet restore src/SlimVector.Studio/SlimVector.Studio.csproj -r "$rid"; \
+    dotnet publish src/SlimVector.Studio/SlimVector.Studio.csproj \
         -c Release \
         -r "$rid" \
         --self-contained true \
         --no-restore \
         -o /app; \
-    mkdir -p /runtime/data
+    mkdir -p /runtime/data /runtime/models
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled-extra AS final
 WORKDIR /app
 ENV ASPNETCORE_URLS=http://+:8080 \
-    Storage__Path=/data
-EXPOSE 8080 3262 3263 3264
-VOLUME ["/data"]
-COPY --from=build /app/SlimVector.Api /app/SlimVector.Api
+    Storage__Path=/data \
+    Backup__Path=/data/backups \
+    Studio__ModelDirectory=/models
+EXPOSE 8080
+VOLUME ["/data", "/models"]
+COPY --from=build /app /app
 COPY --from=build --chown=$APP_UID:$APP_UID /runtime/data /data
+COPY --from=build --chown=$APP_UID:$APP_UID /runtime/models /models
 USER $APP_UID
-ENTRYPOINT ["/app/SlimVector.Api"]
+ENTRYPOINT ["/app/SlimVector.Studio"]

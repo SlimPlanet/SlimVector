@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Options;
 using SlimVector.Application;
 using SlimVector.DocIngestor;
 using SlimVector.DocIngestor.Models;
@@ -10,10 +11,7 @@ using SlimVector.Studio.Services;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 StudioOptions studioOptions = builder.Configuration.GetSection(StudioOptions.SectionName).Get<StudioOptions>() ?? new StudioOptions();
-if (studioOptions.MaximumUploadBytes < 1024 * 1024)
-{
-    throw new InvalidOperationException("Studio:MaximumUploadBytes doit être d’au moins 1 Mo.");
-}
+studioOptions.Validate();
 
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = studioOptions.MaximumUploadBytes + 1024 * 1024);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = studioOptions.MaximumUploadBytes + 1024 * 1024);
@@ -22,7 +20,10 @@ builder.Services.ConfigureHttpJsonOptions(static options =>
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
 });
-builder.Services.AddSingleton(studioOptions);
+builder.Services.AddSingleton<IValidateOptions<StudioOptions>, StudioOptionsValidator>();
+builder.Services.AddOptions<StudioOptions>()
+    .Bind(builder.Configuration.GetSection(StudioOptions.SectionName))
+    .ValidateOnStart();
 builder.Services.AddSlimVector(builder.Configuration);
 builder.Services.AddSlimVectorDocIngestor(options =>
 {

@@ -118,28 +118,117 @@ public sealed class OnnxSentenceEmbeddingGenerator : IEmbeddingGenerator, IDispo
     private void RunBatch(IReadOnlyList<string> texts, int offset, int count, List<float[]> destination)
     {
         Tokenizer tokenizer = _tokenizer!;
-        InferenceSession session = _session!;
-        EncodedInput[] encoded = new EncodedInput[count];
-        int sequenceLength = 1;
-        for (int batch = 0; batch < count; batch++)
+        List<EncodedInput> encoded = [];
+        int[] windowCounts = new int[count];
+        for (int document = 0; document < count; document++)
         {
             Encoding encoding = tokenizer.Encode(
-                texts[offset + batch],
+                texts[offset + document],
                 addSpecialTokens: true,
                 includeTypeIds: true,
                 includeAttentionMask: true).First();
             uint[] ids = encoding.Ids.ToArray();
             uint[] typeIds = encoding.TypeIds.ToArray();
-            if (ids.Length > _options.MaximumSequenceLength)
+            IReadOnlyList<EncodedTokenWindow> windows = CreateTokenWindows(
+                ids,
+                typeIds,
+                _options.MaximumSequenceLength);
+            windowCounts[document] = windows.Count;
+            foreach (EncodedTokenWindow window in windows)
             {
-                uint last = ids[^1];
-                Array.Resize(ref ids, _options.MaximumSequenceLength);
-                ids[^1] = last;
-                Array.Resize(ref typeIds, _options.MaximumSequenceLength);
+                encoded.Add(new EncodedInput(window.Ids, window.TypeIds, window.ContentTokenCount));
+            }
+        }
+
+        List<float[]> windowVectors = new(encoded.Count);
+        for (int windowOffset = 0; windowOffset < encoded.Count; windowOffset += _options.BatchSize)
+        {
+            int windowCount = Math.Min(_options.BatchSize, encoded.Count - windowOffset);
+            RunEncodedBatch(encoded, windowOffset, windowCount, windowVectors);
+        }
+
+        int vectorIndex = 0;
+        for (int document = 0; document < count; document++)
+        {
+            float[] vector = new float[_options.Dimension];
+            int totalWeight = 0;
+            for (int window = 0; window < windowCounts[document]; window++)
+            {
+                EncodedInput item = encoded[vectorIndex];
+                float[] windowVector = windowVectors[vectorIndex];
+                totalWeight += item.ContentTokenCount;
+                for (int dimension = 0; dimension < vector.Length; dimension++)
+                {
+                    vector[dimension] += windowVector[dimension] * item.ContentTokenCount;
+                }
+
+                vectorIndex++;
             }
 
-            encoded[batch] = new EncodedInput(ids, typeIds);
-            sequenceLength = Math.Max(sequenceLength, ids.Length);
+            if (totalWeight > 0)
+            {
+                for (int dimension = 0; dimension < vector.Length; dimension++)
+                {
+                    vector[dimension] /= totalWeight;
+                }
+            }
+
+            Normalize(vector);
+            destination.Add(vector);
+        }
+    }
+
+    internal static IReadOnlyList<EncodedTokenWindow> CreateTokenWindows(
+        uint[] ids,
+        uint[] typeIds,
+        int maximumSequenceLength)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentNullException.ThrowIfNull(typeIds);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumSequenceLength, 3);
+
+        int contentTokenCount = Math.Max(1, ids.Length - 2);
+        if (ids.Length <= maximumSequenceLength || ids.Length < 3)
+        {
+            return [new EncodedTokenWindow(ids, typeIds, contentTokenCount)];
+        }
+
+        int windowCapacity = maximumSequenceLength - 2;
+        int contentLength = ids.Length - 2;
+        List<EncodedTokenWindow> windows = new((contentLength + windowCapacity - 1) / windowCapacity);
+        for (int contentOffset = 0; contentOffset < contentLength; contentOffset += windowCapacity)
+        {
+            int count = Math.Min(windowCapacity, contentLength - contentOffset);
+            uint[] windowIds = new uint[count + 2];
+            uint[] windowTypeIds = new uint[count + 2];
+            windowIds[0] = ids[0];
+            windowIds[^1] = ids[^1];
+            windowTypeIds[0] = typeIds.Length > 0 ? typeIds[0] : 0;
+            windowTypeIds[^1] = typeIds.Length > 0 ? typeIds[Math.Min(ids.Length - 1, typeIds.Length - 1)] : 0;
+            Array.Copy(ids, contentOffset + 1, windowIds, 1, count);
+            for (int token = 0; token < count; token++)
+            {
+                int sourceIndex = contentOffset + token + 1;
+                windowTypeIds[token + 1] = sourceIndex < typeIds.Length ? typeIds[sourceIndex] : 0;
+            }
+
+            windows.Add(new EncodedTokenWindow(windowIds, windowTypeIds, count));
+        }
+
+        return windows;
+    }
+
+    private void RunEncodedBatch(
+        IReadOnlyList<EncodedInput> encoded,
+        int offset,
+        int count,
+        List<float[]> destination)
+    {
+        InferenceSession session = _session!;
+        int sequenceLength = 1;
+        for (int batch = 0; batch < count; batch++)
+        {
+            sequenceLength = Math.Max(sequenceLength, encoded[offset + batch].Ids.Length);
         }
 
         long[] inputIds = new long[count * sequenceLength];
@@ -147,7 +236,7 @@ public sealed class OnnxSentenceEmbeddingGenerator : IEmbeddingGenerator, IDispo
         long[] attentionMask = new long[count * sequenceLength];
         for (int batch = 0; batch < count; batch++)
         {
-            EncodedInput item = encoded[batch];
+            EncodedInput item = encoded[offset + batch];
             for (int token = 0; token < item.Ids.Length; token++)
             {
                 int index = batch * sequenceLength + token;
@@ -194,7 +283,7 @@ public sealed class OnnxSentenceEmbeddingGenerator : IEmbeddingGenerator, IDispo
             for (int batch = 0; batch < count; batch++)
             {
                 float[] vector = new float[_options.Dimension];
-                int activeTokens = encoded[batch].Ids.Length;
+                int activeTokens = encoded[offset + batch].Ids.Length;
                 for (int token = 0; token < activeTokens; token++)
                 {
                     for (int dimension = 0; dimension < vector.Length; dimension++)
@@ -259,5 +348,7 @@ public sealed class OnnxSentenceEmbeddingGenerator : IEmbeddingGenerator, IDispo
         "embedding_model_output_invalid",
         $"The ONNX model returned an unexpected tensor shape [{string.Join(',', dimensions)}].");
 
-    private sealed record EncodedInput(uint[] Ids, uint[] TypeIds);
+    internal readonly record struct EncodedTokenWindow(uint[] Ids, uint[] TypeIds, int ContentTokenCount);
+
+    private sealed record EncodedInput(uint[] Ids, uint[] TypeIds, int ContentTokenCount);
 }

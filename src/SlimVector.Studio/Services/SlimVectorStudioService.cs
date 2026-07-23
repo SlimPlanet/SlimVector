@@ -33,7 +33,7 @@ public sealed class SlimVectorStudioService
         IWriteScheduler writes,
         OperationalMetrics operations,
         IOptions<StorageOptions> storageOptions,
-        StudioOptions studioOptions)
+        IOptions<StudioOptions> studioOptions)
     {
         _database = database;
         _pipeline = pipeline;
@@ -43,7 +43,7 @@ public sealed class SlimVectorStudioService
         _writes = writes;
         _operations = operations;
         _storageOptions = storageOptions.Value;
-        _studioOptions = studioOptions;
+        _studioOptions = studioOptions.Value;
     }
 
     public async ValueTask<StudioBootstrapResponse> GetBootstrapAsync(CancellationToken cancellationToken)
@@ -64,6 +64,13 @@ public sealed class SlimVectorStudioService
             Model = model,
             SupportedExtensions = [".pdf", ".docx", ".pptx", ".txt", ".md"],
             MaximumUploadBytes = _studioOptions.MaximumUploadBytes,
+            Chunking = new StudioChunkingConfiguration
+            {
+                TargetTokens = _studioOptions.Chunking.TargetTokens,
+                MaximumTokens = _studioOptions.Chunking.MaximumTokens,
+                OverlapTokens = _studioOptions.Chunking.OverlapTokens,
+                MaximumAllowedTokens = StudioOptions.MaximumChunkTokens,
+            },
             StoragePath = Path.GetFullPath(_storageOptions.Path),
         };
     }

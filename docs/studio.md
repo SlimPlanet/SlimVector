@@ -26,7 +26,7 @@ Drop multiple PDF, DOCX, PPTX, text, or Markdown files and choose:
 
 - target collection;
 - recursive, paragraph, or sentence chunking;
-- target/maximum/overlap token sizes;
+- target/maximum/overlap token sizes (500/600/100 by default, up to 1,200);
 - arbitrary scalar or homogeneous-array JSON metadata;
 - replacement by source file name;
 - atomic batch behavior;
@@ -82,7 +82,12 @@ Studio settings live in `src/SlimVector.Studio/appsettings.json` and can be over
     "MaximumUploadBytes": 134217728,
     "DefaultCollection": "documents",
     "ModelDirectory": null,
-    "AutoDownloadModel": true
+    "AutoDownloadModel": true,
+    "Chunking": {
+      "TargetTokens": 500,
+      "MaximumTokens": 600,
+      "OverlapTokens": 100
+    }
   }
 }
 ```
@@ -93,10 +98,17 @@ Examples:
 Storage__Path=/srv/slimvector/data \
 Backup__Path=/srv/slimvector/backups \
 Studio__ModelDirectory=/srv/slimvector/models/minilm \
+Studio__Chunking__MaximumTokens=1200 \
 dotnet run --project src/SlimVector.Studio
 ```
 
 The request-body and multipart limits are derived from `Studio:MaximumUploadBytes`. The model cache can be mounted read-only after it has been pre-populated; set `Studio:AutoDownloadModel=false` in that deployment.
+
+The Studio accepts a chunk maximum from 8 to 1,200 tokens. `TargetTokens` must
+not exceed `MaximumTokens`, and `OverlapTokens` must remain below the target.
+Because the bundled model has a 128-token context, larger chunks are encoded in
+successive model windows and their normalized vectors are aggregated. This keeps
+the entire chunk represented instead of silently truncating its tail.
 
 All ordinary SlimVector sections remain available, including vector/text/metadata index settings, adaptive batching, backpressure, Raft, geo replication, and backup providers. See [configuration](configuration.md).
 

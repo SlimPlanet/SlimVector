@@ -61,7 +61,20 @@ public sealed record StudioBootstrapResponse
 
     public required long MaximumUploadBytes { get; init; }
 
+    public required StudioChunkingConfiguration Chunking { get; init; }
+
     public required string StoragePath { get; init; }
+}
+
+public sealed record StudioChunkingConfiguration
+{
+    public required int TargetTokens { get; init; }
+
+    public required int MaximumTokens { get; init; }
+
+    public required int OverlapTokens { get; init; }
+
+    public required int MaximumAllowedTokens { get; init; }
 }
 
 public sealed record CreateCollectionInput

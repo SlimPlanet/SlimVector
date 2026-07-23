@@ -43,7 +43,7 @@ dotnet run --project src/SlimVector.Studio
 Open `http://localhost:5187`. The Studio starts an embedded single-node SlimVector database, creates a 384-dimension `documents` collection on first launch, and offers:
 
 - drag-and-drop PDF, DOCX, PPTX, text, and Markdown extraction;
-- recursive, paragraph, or sentence chunking with configurable target, maximum, and overlap;
+- recursive, paragraph, or sentence chunking (500-token target, 600-token default cap, configurable up to 1,200);
 - fully local multilingual ONNX embeddings with automatic ARM64/AVX2 model selection;
 - vector, BM25, hybrid, and metadata-only search with consistency and returned-field controls;
 - collection CRUD and HNSW settings, document inspection and manual batch mutations;
@@ -53,16 +53,86 @@ The first vector operation downloads the pinned Apache-2.0 Hugging Face model in
 
 ## Docker
 
-Published multi-architecture images are available from GitHub Container Registry:
+Two multi-architecture images are published to GitHub Container Registry:
+
+| Component | Published image | Dockerfile | Container port | Persistent volumes |
+| --- | --- | --- | --- | --- |
+| HTTP API | `ghcr.io/slimplanet/slimvector` | `Dockerfile` | `8080` | `/data` |
+| Document Studio | `ghcr.io/slimplanet/slimvector-studio` | `Dockerfile.Studio` | `8080` | `/data`, `/models` |
+
+### Run the published API image
 
 ```bash
 docker pull ghcr.io/slimplanet/slimvector:latest
-docker run --rm -p 8080:8080 -v slimvector-data:/data ghcr.io/slimplanet/slimvector:latest
+docker run --rm --name slimvector \
+  -p 8080:8080 \
+  -v slimvector-data:/data \
+  ghcr.io/slimplanet/slimvector:latest
 ```
 
-Every stable GitHub Release links to its immutable image digest and includes a checksummed archive of the released `Dockerfile`, `.dockerignore`, and Compose definitions.
+The API, OpenAPI document, health endpoints, and metrics are then available on
+`http://localhost:8080`.
 
-The CI/CD release channel is selected from the last commit message, following the SlimFaas convention:
+### Run the published Studio image
+
+```bash
+docker pull ghcr.io/slimplanet/slimvector-studio:latest
+docker run --rm --name slimvector-studio \
+  -p 5187:8080 \
+  -v slimvector-studio-data:/data \
+  -v slimvector-studio-models:/models \
+  ghcr.io/slimplanet/slimvector-studio:latest
+```
+
+Open `http://localhost:5187`. The `/data` volume contains the database and
+backups. The `/models` volume keeps the multilingual ONNX model between container
+replacements. The first vector operation downloads the pinned model from Hugging
+Face; no document or query content is sent there.
+
+Configuration uses the standard .NET double-underscore environment syntax. For
+example:
+
+```bash
+docker run --rm --name slimvector-studio \
+  -p 5187:8080 \
+  -v slimvector-studio-data:/data \
+  -v slimvector-studio-models:/models \
+  -e Storage__FlushToDisk=true \
+  -e Studio__MaximumUploadBytes=268435456 \
+  -e Studio__AutoDownloadModel=true \
+  -e Studio__Chunking__MaximumTokens=1200 \
+  ghcr.io/slimplanet/slimvector-studio:latest
+```
+
+Set `Studio__AutoDownloadModel=false` when `/models` is pre-provisioned for an
+offline deployment. See [configuration](docs/configuration.md) and the
+[Studio guide](docs/studio.md) for the remaining settings.
+
+### Build from the Dockerfiles
+
+Build the same images locally from the repository root:
+
+```bash
+docker build -f Dockerfile -t slimvector:local .
+docker build -f Dockerfile.Studio -t slimvector-studio:local .
+```
+
+Run the locally built Studio image with the same persistent volumes:
+
+```bash
+docker run --rm -p 5187:8080 \
+  -v slimvector-studio-data:/data \
+  -v slimvector-studio-models:/models \
+  slimvector-studio:local
+```
+
+Every stable GitHub Release links to the immutable digest of both images and
+includes a checksummed archive of the released Dockerfiles, `.dockerignore`, and
+Compose definitions.
+
+The same version and channel tags are applied to both published images. The
+CI/CD release channel is selected from the last commit message, following the
+SlimFaas convention:
 
 - `alpha` publishes `<next-version>-alpha.<run>` and updates the `alpha` image tag;
 - `beta` publishes `<next-version>-beta.<run>` and updates the `beta` image tag;

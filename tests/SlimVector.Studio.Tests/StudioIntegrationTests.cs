@@ -32,6 +32,9 @@ public sealed class StudioIntegrationTests
             Assert.Contains("Laboratoire de requêtes", html, StringComparison.Ordinal);
             Assert.Contains("Fragments indexés", html, StringComparison.Ordinal);
             Assert.Contains("Régulation de charge", html, StringComparison.Ordinal);
+            Assert.Contains("name=\"targetTokens\" value=\"500\"", html, StringComparison.Ordinal);
+            Assert.Contains("name=\"maximumTokens\" value=\"600\"", html, StringComparison.Ordinal);
+            Assert.Contains("porté à 1 200", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Query lab", html, StringComparison.Ordinal);
             Assert.Contains("fragments produits", javascript, StringComparison.Ordinal);
             Assert.Contains("Le mode nœud unique", javascript, StringComparison.Ordinal);
@@ -41,6 +44,11 @@ public sealed class StudioIntegrationTests
             Assert.Equal(384, collection.GetProperty("definition").GetProperty("dimension").GetInt32());
             Assert.False(collection.GetProperty("definition").TryGetProperty("placement", out _));
             Assert.True(bootstrap.RootElement.GetProperty("model").GetProperty("isReady").GetBoolean());
+            JsonElement chunking = bootstrap.RootElement.GetProperty("chunking");
+            Assert.Equal(500, chunking.GetProperty("targetTokens").GetInt32());
+            Assert.Equal(600, chunking.GetProperty("maximumTokens").GetInt32());
+            Assert.Equal(100, chunking.GetProperty("overlapTokens").GetInt32());
+            Assert.Equal(1200, chunking.GetProperty("maximumAllowedTokens").GetInt32());
             using JsonDocument runtime = await ReadJsonAsync(client, "/studio/api/runtime", cancellationToken);
             Assert.Equal(0, runtime.RootElement.GetProperty("openCollections").GetInt32());
             Assert.Equal(0, runtime.RootElement.GetProperty("operations").GetProperty("indexLoads").GetInt64());
@@ -57,6 +65,70 @@ public sealed class StudioIntegrationTests
             Assert.Equal(
                 "Un contenu multipart/form-data est requis.",
                 problem.RootElement.GetProperty("detail").GetString());
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task StudioUsesLargeChunkDefaultsAndEnforcesMaximum()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string root = TestRoot();
+        try
+        {
+            await using WebApplicationFactory<Program> factory = CreateFactory(root);
+            using HttpClient client = factory.CreateClient();
+            string text = string.Join(' ', Enumerable.Repeat("concept", 700));
+            using MultipartFormDataContent content = new();
+            using ByteArrayContent file = new(Encoding.UTF8.GetBytes(text));
+            file.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain");
+            content.Add(file, "files", "large.txt");
+            content.Add(new StringContent("documents"), "collection");
+            content.Add(new StringContent("true"), "previewOnly");
+
+            using HttpResponseMessage ingestion = await client.PostAsync(
+                "/studio/api/ingest",
+                content,
+                cancellationToken);
+            ingestion.EnsureSuccessStatusCode();
+            using JsonDocument result = await JsonDocument.ParseAsync(
+                await ingestion.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken);
+            JsonElement chunks = result.RootElement[0].GetProperty("chunks");
+            Assert.InRange(chunks.GetArrayLength(), 2, 5);
+            Assert.All(
+                chunks.EnumerateArray(),
+                static chunk => Assert.InRange(chunk.GetProperty("estimatedTokens").GetInt32(), 1, 600));
+            Assert.Contains(
+                chunks.EnumerateArray(),
+                static chunk => chunk.GetProperty("estimatedTokens").GetInt32() >= 400);
+
+            using MultipartFormDataContent invalidContent = new();
+            using ByteArrayContent invalidFile = new(Encoding.UTF8.GetBytes("contenu"));
+            invalidFile.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain");
+            invalidContent.Add(invalidFile, "files", "invalid.txt");
+            invalidContent.Add(new StringContent("documents"), "collection");
+            invalidContent.Add(new StringContent("500"), "targetTokens");
+            invalidContent.Add(new StringContent("1201"), "maximumTokens");
+            invalidContent.Add(new StringContent("100"), "overlapTokens");
+            invalidContent.Add(new StringContent("true"), "previewOnly");
+
+            using HttpResponseMessage invalid = await client.PostAsync(
+                "/studio/api/ingest",
+                invalidContent,
+                cancellationToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            using JsonDocument problem = await JsonDocument.ParseAsync(
+                await invalid.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken);
+            Assert.Equal("Argument invalide", problem.RootElement.GetProperty("title").GetString());
+            Assert.Contains(
+                "ne peut pas dépasser 1200",
+                problem.RootElement.GetProperty("detail").GetString(),
+                StringComparison.Ordinal);
         }
         finally
         {

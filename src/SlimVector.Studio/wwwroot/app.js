@@ -12,6 +12,7 @@
     documentLimit: 25,
     documentTotal: 0,
     selectedDocuments: new Set(),
+    chunkingDefaultsApplied: false,
   };
 
   const escapeHtml = (value) => String(value ?? '')
@@ -157,9 +158,22 @@
     $('#stat-model').textContent = `${data.model.dimension}d`;
     $('#model-variant').textContent = data.model.variant.split('/').pop().replace('.onnx', '');
     setModelState(data.model);
+    applyChunkingDefaults(data.chunking);
     setDatabaseState(true, 'SlimVector prêt', `${data.collections.length} collection${data.collections.length > 1 ? 's' : ''}`);
     renderOverviewCollections();
     renderCollections();
+  }
+
+  function applyChunkingDefaults(chunking) {
+    if (state.chunkingDefaultsApplied || !chunking) return;
+    const form = $('#ingest-form');
+    form.elements.targetTokens.value = chunking.targetTokens;
+    form.elements.targetTokens.max = chunking.maximumAllowedTokens;
+    form.elements.maximumTokens.value = chunking.maximumTokens;
+    form.elements.maximumTokens.max = chunking.maximumAllowedTokens;
+    form.elements.overlapTokens.value = chunking.overlapTokens;
+    form.elements.overlapTokens.max = Math.max(0, chunking.maximumAllowedTokens - 1);
+    state.chunkingDefaultsApplied = true;
   }
 
   function setModelState(model) {

@@ -1,8 +1,13 @@
 **/bin
 **/obj
+**/data
+**/backups
+**/model
+**/models
+**/TestResults
 artifacts
+BenchmarkDotNet.Artifacts
 .git
 .idea
 .vs
 .vscode
-data
