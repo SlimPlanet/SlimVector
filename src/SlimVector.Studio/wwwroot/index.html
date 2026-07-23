@@ -49,7 +49,7 @@
           <span class="status-dot" id="sidebar-db-dot"></span>
           <div><strong id="sidebar-db-status">Démarrage…</strong><small id="sidebar-db-detail">SlimVector local</small></div>
         </div>
-        <div class="sidebar-foot"><span>Local-first · sans cloud</span><button id="theme-toggle" class="icon-btn" aria-label="Changer de thème">◐</button></div>
+        <div class="sidebar-foot"><span>Priorité au local · sans service distant</span><button id="theme-toggle" class="icon-btn" aria-label="Changer de thème">◐</button></div>
       </div>
     </aside>
 
@@ -62,7 +62,7 @@
         </div>
         <div class="topbar-actions">
           <div class="model-pill" id="model-pill"><span class="status-dot"></span><span id="model-pill-label">Modèle local</span></div>
-          <button class="button secondary compact" id="quick-ingest"><svg><use href="#i-plus"/></svg>Ingestérer</button>
+          <button class="button secondary compact" id="quick-ingest"><svg><use href="#i-plus"/></svg>Ingérer</button>
         </div>
       </header>
 
@@ -88,7 +88,7 @@
 
           <div class="stats-grid">
             <article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-layers"/></svg></div><div><span>Collections</span><strong id="stat-collections">—</strong><small>espaces vectoriels</small></div></article>
-            <article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-doc"/></svg></div><div><span>Chunks indexés</span><strong id="stat-documents">—</strong><small id="stat-active-count">collection active</small></div></article>
+            <article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-doc"/></svg></div><div><span>Fragments indexés</span><strong id="stat-documents">—</strong><small id="stat-active-count">collection active</small></div></article>
             <article class="stat-card"><div class="stat-icon coral"><svg><use href="#i-spark"/></svg></div><div><span>Modèle</span><strong id="stat-model">384d</strong><small id="stat-model-status">vérification…</small></div></article>
             <article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-pulse"/></svg></div><div><span>Requêtes</span><strong id="stat-searches">—</strong><small id="stat-latency">moteur prêt</small></div></article>
           </div>
@@ -99,16 +99,16 @@
               <div id="overview-collections" class="collection-list skeleton-host"></div>
             </article>
             <article class="panel model-card">
-              <div class="panel-header"><div><span class="panel-kicker">Inférence locale</span><h2>Modèle d’embedding</h2></div><span class="status-dot" id="model-card-dot"></span></div>
+              <div class="panel-header"><div><span class="panel-kicker">Inférence locale</span><h2>Modèle d’encodage vectoriel</h2></div><span class="status-dot" id="model-card-dot"></span></div>
               <div class="model-name"><svg><use href="#i-spark"/></svg><div><strong>Multilingual MiniLM L12</strong><small>Hugging Face · Apache-2.0</small></div></div>
-              <dl class="compact-dl"><div><dt>Dimensions</dt><dd>384</dd></div><div><dt>Langues</dt><dd>50</dd></div><div><dt>Backend</dt><dd>ONNX Runtime</dd></div><div><dt>Variante</dt><dd id="model-variant">—</dd></div></dl>
+              <dl class="compact-dl"><div><dt>Dimensions</dt><dd>384</dd></div><div><dt>Langues</dt><dd>50</dd></div><div><dt>Moteur</dt><dd>ONNX Runtime</dd></div><div><dt>Variante</dt><dd id="model-variant">—</dd></div></dl>
               <button class="button secondary full" id="prepare-model"><svg><use href="#i-refresh"/></svg><span id="prepare-model-label">Préparer le modèle</span></button>
             </article>
           </div>
         </section>
 
         <section class="view" id="view-ingest">
-          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-upload"/></svg> Pipeline documentaire</span><h1>Extraire, découper, vectoriser</h1><p>Déposez un ou plusieurs fichiers. Le pipeline conserve leurs pages, diapositives et titres dans les métadonnées.</p></div></div>
+          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-upload"/></svg> Chaîne documentaire</span><h1>Extraire, découper, vectoriser</h1><p>Déposez un ou plusieurs fichiers. Le traitement conserve leurs pages, diapositives et titres dans les métadonnées.</p></div></div>
           <form id="ingest-form" class="ingest-layout">
             <div class="ingest-main">
               <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Déposer ou sélectionner des documents">
@@ -119,29 +119,29 @@
                 <small>PDF · DOCX · PPTX · TXT · MD — 128 Mo maximum par fichier</small>
               </div>
               <div id="file-queue" class="file-queue"></div>
-              <div id="ingest-result" class="result-zone empty-state"><svg><use href="#i-spark"/></svg><h3>Les chunks apparaîtront ici</h3><p>Prévisualisez le découpage ou stockez directement les vecteurs dans SlimVector.</p></div>
+              <div id="ingest-result" class="result-zone empty-state"><svg><use href="#i-spark"/></svg><h3>Les fragments apparaîtront ici</h3><p>Prévisualisez le découpage ou stockez directement les vecteurs dans SlimVector.</p></div>
             </div>
             <aside class="config-panel">
               <div class="config-title"><div><span class="panel-kicker">Configuration</span><h2>Ingestion</h2></div><svg><use href="#i-settings"/></svg></div>
               <label class="field"><span>Collection cible</span><select id="ingest-collection" name="collection"></select></label>
-              <label class="field"><span>Stratégie de chunking</span><select name="strategy"><option value="recursive">Récursive</option><option value="paragraph">Paragraphes</option><option value="sentence">Phrases</option></select><small>La stratégie récursive préserve au mieux la structure.</small></label>
+              <label class="field"><span>Stratégie de découpage</span><select name="strategy"><option value="recursive">Récursive</option><option value="paragraph">Paragraphes</option><option value="sentence">Phrases</option></select><small>La stratégie récursive préserve au mieux la structure.</small></label>
               <div class="field-grid three">
                 <label class="field"><span>Cible</span><input type="number" name="targetTokens" value="90" min="8" max="120"></label>
                 <label class="field"><span>Maximum</span><input type="number" name="maximumTokens" value="120" min="8" max="126"></label>
-                <label class="field"><span>Overlap</span><input type="number" name="overlapTokens" value="18" min="0" max="89"></label>
+                <label class="field"><span>Chevauchement</span><input type="number" name="overlapTokens" value="18" min="0" max="89"></label>
               </div>
               <label class="field"><span>Métadonnées personnalisées</span><textarea name="metadata" rows="5" spellcheck="false" placeholder='{"équipe":"R&D","confidentiel":false}'></textarea></label>
               <div class="toggle-row"><div><strong>Remplacer la version précédente</strong><small>Même nom de fichier dans la collection</small></div><label class="switch"><input type="checkbox" name="replaceExisting" checked><span></span></label></div>
               <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Chaque lot réussit ou échoue ensemble</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>
               <div class="toggle-row"><div><strong>Prévisualisation seule</strong><small>Ne rien écrire dans SlimVector</small></div><label class="switch"><input type="checkbox" name="previewOnly"><span></span></label></div>
-              <button type="submit" class="button primary full large"><svg><use href="#i-spark"/></svg>Lancer le pipeline</button>
+              <button type="submit" class="button primary full large"><svg><use href="#i-spark"/></svg>Lancer le traitement</button>
               <p class="privacy-note"><span>●</span> Traitement 100 % local. Aucun document n’est envoyé à un service tiers.</p>
             </aside>
           </form>
         </section>
 
         <section class="view" id="view-search">
-          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-search"/></svg> Query lab</span><h1>Interroger la collection</h1><p>Comparez les moteurs vectoriel, BM25, hybride et métadonnées avec la même collection.</p></div><div class="heading-metric"><span id="search-collection-count">—</span><small>chunks disponibles</small></div></div>
+          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-search"/></svg> Laboratoire de requêtes</span><h1>Interroger la collection</h1><p>Comparez les moteurs vectoriel, BM25, hybride et métadonnées avec la même collection.</p></div><div class="heading-metric"><span id="search-collection-count">—</span><small>fragments disponibles</small></div></div>
           <div class="search-layout">
             <form id="search-form" class="panel query-builder">
               <div class="mode-tabs" role="radiogroup" aria-label="Mode de recherche">
@@ -153,8 +153,8 @@
               <input type="hidden" name="mode" value="hybrid">
               <label class="query-box"><span>Votre requête</span><textarea name="query" rows="4" placeholder="Ex. Comment fonctionne la réplication géographique ?"></textarea><div class="query-hint"><span><kbd>⌘</kbd><kbd>↵</kbd> pour lancer</span><span id="query-model-hint">Vectorisation locale 384d</span></div></label>
               <div class="query-options">
-                <label class="field"><span>Top K</span><input type="number" name="limit" value="10" min="1" max="1000"></label>
-                <label class="field"><span>Cohérence</span><select name="consistency"><option value="leader">Leader</option><option value="linearizable">Linéarisable</option><option value="stale">Stale / rapide</option></select></label>
+                <label class="field"><span>Nombre de résultats</span><input type="number" name="limit" value="10" min="1" max="1000"></label>
+                <label class="field"><span>Cohérence</span><select name="consistency"><option value="leader">Chef de groupe</option><option value="linearizable">Linéarisable</option><option value="stale">Potentiellement ancien / rapide</option></select></label>
                 <label class="field weight-field"><span>Poids vecteur <output id="vector-weight-output">50%</output></span><input type="range" name="vectorWeight" min="0" max="100" value="50"></label>
                 <label class="field weight-field"><span>Poids texte <output id="text-weight-output">50%</output></span><input type="range" name="textWeight" min="0" max="100" value="50"></label>
               </div>
@@ -174,7 +174,7 @@
         </section>
 
         <section class="view" id="view-documents">
-          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-doc"/></svg> Explorateur</span><h1>Documents & chunks</h1><p>Inspectez le texte, les métadonnées, les versions et les dimensions stockées.</p></div><button class="button primary" id="new-document"><svg><use href="#i-plus"/></svg>Mutation manuelle</button></div>
+          <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-doc"/></svg> Explorateur</span><h1>Documents et fragments</h1><p>Inspectez le texte, les métadonnées, les versions et les dimensions stockées.</p></div><button class="button primary" id="new-document"><svg><use href="#i-plus"/></svg>Mutation manuelle</button></div>
           <div class="panel table-panel">
             <div class="table-toolbar"><div><strong id="documents-total">— éléments</strong><span id="documents-range">collection active</span></div><div class="toolbar-actions"><label class="check compact-check"><input type="checkbox" id="include-vectors"><span><svg><use href="#i-check"/></svg></span>Charger les vecteurs</label><button class="button danger compact" id="delete-selected" disabled><svg><use href="#i-trash"/></svg>Supprimer</button><button class="icon-btn bordered" id="refresh-documents" aria-label="Actualiser"><svg><use href="#i-refresh"/></svg></button></div></div>
             <div class="document-table-wrap"><table class="data-table"><thead><tr><th class="checkbox-cell"><input type="checkbox" id="select-all-documents" aria-label="Tout sélectionner"></th><th>Identifiant / texte</th><th>Source</th><th>Vecteur</th><th>Version</th><th>Mise à jour</th></tr></thead><tbody id="documents-body"></tbody></table></div>
@@ -183,14 +183,14 @@
         </section>
 
         <section class="view" id="view-collections">
-          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-layers"/></svg> Catalog</span><h1>Gérer les collections</h1><p>Choisissez la métrique, la dimension et le type d’index vectoriel de chaque espace.</p></div></div>
+          <div class="page-heading"><div><span class="eyebrow"><svg><use href="#i-layers"/></svg> Catalogue</span><h1>Gérer les collections</h1><p>Choisissez la métrique, la dimension et le type d’index vectoriel de chaque espace.</p></div></div>
           <div class="collections-layout">
             <form id="create-collection-form" class="panel create-card">
               <div class="config-title"><div><span class="panel-kicker">Nouvel espace</span><h2>Créer une collection</h2></div><div class="stat-icon violet"><svg><use href="#i-plus"/></svg></div></div>
-              <label class="field"><span>Nom</span><input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" placeholder="knowledge-base"></label>
-              <div class="field-grid two"><label class="field"><span>Dimension</span><input name="dimension" type="number" value="384" min="1" max="65536"></label><label class="field"><span>Métrique</span><select name="metric"><option value="cosine">Cosine</option><option value="dotProduct">Dot product</option><option value="euclidean">Euclidienne</option></select></label></div>
-              <label class="field"><span>Index vectoriel</span><select name="indexKind"><option value="auto">Auto</option><option value="flat">Flat exact</option><option value="hnsw">HNSW</option><option value="ivfFlat">IVF-Flat</option><option value="ivfPq">IVF-PQ</option><option value="diskAnn">DiskANN</option></select></label>
-              <details class="advanced"><summary>Paramètres HNSW <svg><use href="#i-chevron"/></svg></summary><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number" value="16" min="2" max="128"></label><label class="field"><span>ef build</span><input name="hnswEfConstruction" type="number" value="200" min="16" max="4096"></label><label class="field"><span>ef search</span><input name="hnswEfSearch" type="number" value="64" min="1" max="4096"></label></div></details>
+              <label class="field"><span>Nom</span><input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" placeholder="base-connaissances"></label>
+              <div class="field-grid two"><label class="field"><span>Dimension</span><input name="dimension" type="number" value="384" min="1" max="65536"></label><label class="field"><span>Métrique</span><select name="metric"><option value="cosine">Cosinus</option><option value="dotProduct">Produit scalaire</option><option value="euclidean">Euclidienne</option></select></label></div>
+              <label class="field"><span>Index vectoriel</span><select name="indexKind"><option value="auto">Automatique</option><option value="flat">Plat exact</option><option value="hnsw">HNSW</option><option value="ivfFlat">IVF-Flat</option><option value="ivfPq">IVF-PQ</option><option value="diskAnn">DiskANN</option></select></label>
+              <details class="advanced"><summary>Paramètres HNSW <svg><use href="#i-chevron"/></svg></summary><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number" value="16" min="2" max="128"></label><label class="field"><span>ef construction</span><input name="hnswEfConstruction" type="number" value="200" min="16" max="4096"></label><label class="field"><span>ef recherche</span><input name="hnswEfSearch" type="number" value="64" min="1" max="4096"></label></div></details>
               <button type="submit" class="button primary full"><svg><use href="#i-plus"/></svg>Créer la collection</button>
               <p class="form-note">Utilisez 384 dimensions pour l’ingestion et la recherche vectorisée locales.</p>
             </form>
@@ -201,9 +201,9 @@
         <section class="view" id="view-operations">
           <div class="page-heading split"><div><span class="eyebrow"><svg><use href="#i-pulse"/></svg> Observabilité</span><h1>Exploitation & sauvegardes</h1><p>Suivez le consensus, les files adaptatives, les index et les opérations de restauration.</p></div><button class="button secondary" id="refresh-runtime"><svg><use href="#i-refresh"/></svg>Actualiser</button></div>
           <div class="runtime-banner" id="runtime-banner"><span class="status-dot"></span><div><strong>SlimVector démarre…</strong><small>Vérification du consensus local</small></div></div>
-          <div class="stats-grid ops-stats"><article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-database"/></svg></div><div><span>Mémoire managée</span><strong id="op-memory">—</strong><small>GC heap courant</small></div></article><article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-layers"/></svg></div><div><span>Collections ouvertes</span><strong id="op-open">—</strong><small>runtimes chargés</small></div></article><article class="stat-card"><div class="stat-icon coral"><svg><use href="#i-upload"/></svg></div><div><span>Écritures</span><strong id="op-writes">—</strong><small id="op-queue">file —</small></div></article><article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-search"/></svg></div><div><span>Recherches</span><strong id="op-searches">—</strong><small id="op-failures">0 échec</small></div></article></div>
-          <div class="ops-grid"><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Consensus</span><h2>Groupes Raft</h2></div><span class="count-badge" id="raft-mode">single node</span></div><div id="raft-groups" class="raft-list"></div></article><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Backpressure</span><h2>Écriture adaptative</h2></div></div><div id="write-metrics" class="metric-bars"></div></article></div>
-          <article class="panel backup-panel"><div class="panel-header"><div><span class="panel-kicker">Protection des données</span><h2>Sauvegardes</h2></div><button class="button primary compact" id="create-backup"><svg><use href="#i-plus"/></svg>Créer maintenant</button></div><div class="backup-note"><svg><use href="#i-database"/></svg><p>Snapshots logiques incrémentaux, dédupliqués et vérifiables. La restauration complète demande une confirmation explicite.</p></div><div class="document-table-wrap"><table class="data-table"><thead><tr><th>Identifiant</th><th>Créée le</th><th>Collections</th><th>Documents</th><th>Parent</th><th>Actions</th></tr></thead><tbody id="backups-body"></tbody></table></div></article>
+          <div class="stats-grid ops-stats"><article class="stat-card"><div class="stat-icon teal"><svg><use href="#i-database"/></svg></div><div><span>Mémoire managée</span><strong id="op-memory">—</strong><small>tas mémoire actuel</small></div></article><article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-layers"/></svg></div><div><span>Collections ouvertes</span><strong id="op-open">—</strong><small>moteurs chargés</small></div></article><article class="stat-card"><div class="stat-icon coral"><svg><use href="#i-upload"/></svg></div><div><span>Écritures</span><strong id="op-writes">—</strong><small id="op-queue">file —</small></div></article><article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-search"/></svg></div><div><span>Recherches</span><strong id="op-searches">—</strong><small id="op-failures">0 échec</small></div></article></div>
+          <div class="ops-grid"><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Consensus</span><h2>Groupes Raft</h2></div><span class="count-badge" id="raft-mode">nœud unique</span></div><div id="raft-groups" class="raft-list"></div></article><article class="panel"><div class="panel-header"><div><span class="panel-kicker">Régulation de charge</span><h2>Écriture adaptative</h2></div></div><div id="write-metrics" class="metric-bars"></div></article></div>
+          <article class="panel backup-panel"><div class="panel-header"><div><span class="panel-kicker">Protection des données</span><h2>Sauvegardes</h2></div><button class="button primary compact" id="create-backup"><svg><use href="#i-plus"/></svg>Créer maintenant</button></div><div class="backup-note"><svg><use href="#i-database"/></svg><p>Instantanés logiques incrémentaux, dédupliqués et vérifiables. La restauration complète demande une confirmation explicite.</p></div><div class="document-table-wrap"><table class="data-table"><thead><tr><th>Identifiant</th><th>Créée le</th><th>Collections</th><th>Documents</th><th>Parent</th><th>Actions</th></tr></thead><tbody id="backups-body"></tbody></table></div></article>
         </section>
       </main>
     </div>
@@ -211,14 +211,14 @@
 
   <dialog id="document-dialog" class="modal">
     <form method="dialog" id="manual-document-form">
-      <div class="modal-head"><div><span class="panel-kicker">API mutations</span><h2>Mutation manuelle</h2></div><button type="button" class="icon-btn" data-close-dialog><svg><use href="#i-x"/></svg></button></div>
+      <div class="modal-head"><div><span class="panel-kicker">API de mutation</span><h2>Mutation manuelle</h2></div><button type="button" class="icon-btn" data-close-dialog aria-label="Fermer"><svg><use href="#i-x"/></svg></button></div>
       <div class="modal-body">
-        <div class="field-grid two"><label class="field"><span>Opération</span><select name="kind"><option value="upsert">Upsert</option><option value="add">Add</option><option value="update">Update</option><option value="delete">Delete</option></select></label><label class="field"><span>Identifiant</span><input name="id" required placeholder="manual:001"></label></div>
+        <div class="field-grid two"><label class="field"><span>Opération</span><select name="kind"><option value="upsert">Créer ou remplacer</option><option value="add">Ajouter</option><option value="update">Mettre à jour</option><option value="delete">Supprimer</option></select></label><label class="field"><span>Identifiant</span><input name="id" required placeholder="manuel:001"></label></div>
         <label class="field"><span>Texte</span><textarea name="text" rows="6" placeholder="Contenu à indexer…"></textarea></label>
-        <label class="field"><span>Métadonnées JSON</span><textarea name="metadata" rows="4" spellcheck="false" placeholder='{"type":"note","priority":2}'></textarea></label>
+        <label class="field"><span>Métadonnées JSON</span><textarea name="metadata" rows="4" spellcheck="false" placeholder='{"type":"note","priorite":2}'></textarea></label>
         <label class="field"><span>Vecteur JSON (optionnel)</span><textarea name="vector" rows="3" spellcheck="false" placeholder="[0.12, -0.03, …]"></textarea></label>
         <div class="toggle-row"><div><strong>Vectoriser le texte automatiquement</strong><small>Utilise le modèle ONNX local si le texte est présent</small></div><label class="switch"><input type="checkbox" name="autoVectorize" checked><span></span></label></div>
-        <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Comportement du batch SlimVector</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>
+        <div class="toggle-row"><div><strong>Mutation atomique</strong><small>Comportement du lot SlimVector</small></div><label class="switch"><input type="checkbox" name="atomic" checked><span></span></label></div>
       </div>
       <div class="modal-actions"><button type="button" class="button ghost" data-close-dialog>Annuler</button><button type="submit" class="button primary"><svg><use href="#i-check"/></svg>Exécuter</button></div>
     </form>
@@ -226,8 +226,8 @@
 
   <dialog id="collection-dialog" class="modal small-modal">
     <form method="dialog" id="edit-collection-form">
-      <div class="modal-head"><div><span class="panel-kicker">Configuration</span><h2>Modifier la collection</h2></div><button type="button" class="icon-btn" data-close-dialog><svg><use href="#i-x"/></svg></button></div>
-      <div class="modal-body"><input type="hidden" name="currentName"><label class="field"><span>Nouveau nom</span><input name="name"></label><label class="field"><span>Index</span><select name="indexKind"><option value="auto">Auto</option><option value="flat">Flat exact</option><option value="hnsw">HNSW</option><option value="ivfFlat">IVF-Flat</option><option value="ivfPq">IVF-PQ</option><option value="diskAnn">DiskANN</option></select></label><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number"></label><label class="field"><span>ef build</span><input name="hnswEfConstruction" type="number"></label><label class="field"><span>ef search</span><input name="hnswEfSearch" type="number"></label></div></div>
+      <div class="modal-head"><div><span class="panel-kicker">Configuration</span><h2>Modifier la collection</h2></div><button type="button" class="icon-btn" data-close-dialog aria-label="Fermer"><svg><use href="#i-x"/></svg></button></div>
+      <div class="modal-body"><input type="hidden" name="currentName"><label class="field"><span>Nouveau nom</span><input name="name"></label><label class="field"><span>Index</span><select name="indexKind"><option value="auto">Automatique</option><option value="flat">Plat exact</option><option value="hnsw">HNSW</option><option value="ivfFlat">IVF-Flat</option><option value="ivfPq">IVF-PQ</option><option value="diskAnn">DiskANN</option></select></label><div class="field-grid three"><label class="field"><span>M</span><input name="hnswM" type="number"></label><label class="field"><span>ef construction</span><input name="hnswEfConstruction" type="number"></label><label class="field"><span>ef recherche</span><input name="hnswEfSearch" type="number"></label></div></div>
       <div class="modal-actions"><button type="button" class="button ghost" data-close-dialog>Annuler</button><button type="submit" class="button primary">Enregistrer</button></div>
     </form>
   </dialog>

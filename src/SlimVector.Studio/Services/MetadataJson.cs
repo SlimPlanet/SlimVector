@@ -47,7 +47,7 @@ internal static class MetadataJson
         JsonValueKind.Number when element.TryGetInt64(out long integer) => MetadataValue.From(integer),
         JsonValueKind.Number => MetadataValue.From(element.GetDouble()),
         JsonValueKind.Array => FromArray(element),
-        _ => throw new ArgumentException("Metadata values must be scalar values or homogeneous scalar arrays."),
+        _ => throw new ArgumentException("Les métadonnées doivent être des valeurs scalaires ou des tableaux scalaires homogènes."),
     };
 
     private static MetadataValue FromArray(JsonElement element)
@@ -73,6 +73,6 @@ internal static class MetadataJson
             return MetadataValue.From(items.Select(static item => item.GetDouble()).ToArray());
         }
 
-        throw new ArgumentException("Metadata arrays must contain values of one scalar type.");
+        throw new ArgumentException("Les tableaux de métadonnées doivent contenir des valeurs d’un même type scalaire.");
     }
 }

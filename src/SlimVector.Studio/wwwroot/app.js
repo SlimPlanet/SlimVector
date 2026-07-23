@@ -27,6 +27,36 @@
   };
   const formatDate = (value) => value ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
   const shorten = (value, length = 90) => String(value ?? '').length > length ? `${String(value).slice(0, length)}…` : String(value ?? '');
+  const metricLabels = {
+    cosine: 'cosinus',
+    dotProduct: 'produit scalaire',
+    euclidean: 'euclidienne',
+  };
+  const indexLabels = {
+    auto: 'automatique',
+    flat: 'plat exact',
+    hnsw: 'HNSW',
+    ivfFlat: 'IVF-Flat',
+    ivfPq: 'IVF-PQ',
+    diskAnn: 'DiskANN',
+  };
+  const searchModeLabels = {
+    hybrid: 'hybride',
+    vector: 'vectoriel',
+    text: 'textuel',
+    metadata: 'métadonnées',
+  };
+  const runtimeModeLabels = {
+    singleNode: 'nœud unique',
+    cluster: 'grappe',
+  };
+  const mutationLabels = {
+    upsert: 'création ou remplacement',
+    add: 'ajout',
+    update: 'mise à jour',
+    delete: 'suppression',
+  };
+  const translated = (labels, value) => labels[value] || value;
 
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -153,9 +183,9 @@
       const c = item.definition;
       return `<button class="collection-row" data-select-collection="${escapeHtml(c.name)}" style="width:100%;border-right:0;border-bottom:0;border-left:0;color:inherit;background:transparent;text-align:left">
         <span class="collection-identity"><span class="collection-avatar">${escapeHtml(c.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.id.slice(0, 8))}</small></span></span>
-        <span class="collection-cell"><strong>${formatNumber(item.documentCount)}</strong><small>chunks</small></span>
-        <span class="collection-cell"><strong>${c.dimension}d</strong><small>${escapeHtml(c.metric)}</small></span>
-        <span class="collection-cell"><span class="index-pill">${escapeHtml(c.vectorIndex.kind)}</span><small>index</small></span>
+        <span class="collection-cell"><strong>${formatNumber(item.documentCount)}</strong><small>fragments</small></span>
+        <span class="collection-cell"><strong>${c.dimension}d</strong><small>${escapeHtml(translated(metricLabels, c.metric))}</small></span>
+        <span class="collection-cell"><span class="index-pill">${escapeHtml(translated(indexLabels, c.vectorIndex.kind))}</span><small>index</small></span>
       </button>`;
     }).join('');
   }
@@ -182,7 +212,7 @@
           <span class="collection-avatar">${escapeHtml(c.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.id)}</small></span></button>
           <div class="card-actions"><button class="icon-btn" data-edit-collection="${escapeHtml(c.name)}" title="Configurer"><svg><use href="#i-settings"/></svg></button><button class="icon-btn" data-delete-collection="${escapeHtml(c.name)}" title="Supprimer"><svg><use href="#i-trash"/></svg></button></div>
         </div>
-        <div class="collection-specs"><div><span>Documents</span><strong>${formatNumber(item.documentCount)}</strong></div><div><span>Dimension</span><strong>${c.dimension}d</strong></div><div><span>Index</span><strong>${escapeHtml(c.vectorIndex.kind)}</strong></div></div>
+        <div class="collection-specs"><div><span>Documents</span><strong>${formatNumber(item.documentCount)}</strong></div><div><span>Dimension</span><strong>${c.dimension}d</strong></div><div><span>Index</span><strong>${escapeHtml(translated(indexLabels, c.vectorIndex.kind))}</strong></div></div>
       </article>`;
     }).join('') || '<div class="empty-state"><h3>Catalogue vide</h3></div>';
   }
@@ -216,11 +246,11 @@
     payload.append('collection', $('#ingest-collection').value);
     ['strategy', 'targetTokens', 'maximumTokens', 'overlapTokens', 'metadata'].forEach(key => payload.append(key, values.get(key) || ''));
     ['replaceExisting', 'atomic', 'previewOnly'].forEach(key => payload.append(key, String(values.get(key) === 'on')));
-    showBusy('Pipeline documentaire', `Extraction et vectorisation de ${state.files.length} fichier${state.files.length > 1 ? 's' : ''}…`, state.bootstrap?.model.isReady ? 'Le modèle ONNX est chargé localement.' : 'Premier lancement : téléchargement unique du modèle Hugging Face.');
+    showBusy('Chaîne documentaire', `Extraction et vectorisation de ${state.files.length} fichier${state.files.length > 1 ? 's' : ''}…`, state.bootstrap?.model.isReady ? 'Le modèle ONNX est chargé localement.' : 'Premier lancement : téléchargement unique du modèle Hugging Face.');
     try {
       const results = await api('/ingest', { method: 'POST', body: payload });
       renderIngestResults(results);
-      toast('Ingestion terminée', `${results.reduce((n, r) => n + r.chunkCount, 0)} chunks produits.`);
+      toast('Ingestion terminée', `${results.reduce((n, r) => n + r.chunkCount, 0)} fragments produits.`);
       await loadBootstrap({ quiet: true });
     } catch (error) {
       toast('Échec de l’ingestion', error.message, 'error');
@@ -231,8 +261,8 @@
     const target = $('#ingest-result');
     target.className = 'result-zone';
     target.innerHTML = results.map(result => `<article class="ingest-document-result">
-      <div class="results-header"><div><strong>${escapeHtml(result.fileName)}</strong><small>${escapeHtml(result.format)} · ${result.sectionCount} section(s) · ${formatNumber(result.characterCount)} caractères</small></div><span class="query-time">${Math.round(result.embeddingMilliseconds)} ms embedding</span></div>
-      <div class="ingest-summary"><div class="summary-cell"><span>Chunks</span><strong>${result.chunkCount}</strong></div><div class="summary-cell"><span>Stockés</span><strong>${result.storedCount}</strong></div><div class="summary-cell"><span>Remplacés</span><strong>${result.removedPreviousCount}</strong></div><div class="summary-cell"><span>SHA-256</span><strong title="${escapeHtml(result.contentSha256)}">${escapeHtml(result.contentSha256.slice(0, 8))}</strong></div></div>
+      <div class="results-header"><div><strong>${escapeHtml(result.fileName)}</strong><small>${escapeHtml(result.format)} · ${result.sectionCount} section(s) · ${formatNumber(result.characterCount)} caractères</small></div><span class="query-time">${Math.round(result.embeddingMilliseconds)} ms d’encodage</span></div>
+      <div class="ingest-summary"><div class="summary-cell"><span>Fragments</span><strong>${result.chunkCount}</strong></div><div class="summary-cell"><span>Stockés</span><strong>${result.storedCount}</strong></div><div class="summary-cell"><span>Remplacés</span><strong>${result.removedPreviousCount}</strong></div><div class="summary-cell"><span>SHA-256</span><strong title="${escapeHtml(result.contentSha256)}">${escapeHtml(result.contentSha256.slice(0, 8))}</strong></div></div>
       <div class="chunk-list">${result.chunks.map(chunk => `<details class="chunk-card"><summary><span class="chunk-no">${String(chunk.sequence + 1).padStart(2, '0')}</span><span class="chunk-head"><strong>${escapeHtml(chunk.heading || chunk.locations.join(' · '))}</strong><small>${escapeHtml(shorten(chunk.text, 115))}</small></span><span class="chunk-tokens">${chunk.estimatedTokens} tok.</span></summary><div class="chunk-content"><p>${escapeHtml(chunk.text)}</p><div class="vector-preview">[${chunk.vectorPreview.map(value => Number(value).toFixed(5)).join(', ')}, …]</div></div></details>`).join('')}</div>
     </article>`).join('');
   }
@@ -301,7 +331,7 @@
       target.innerHTML = '<div class="empty-state tall"><svg><use href="#i-search"/></svg><h2>Aucun résultat</h2><p>Élargissez votre requête ou retirez le filtre de métadonnées.</p></div>';
       return;
     }
-    target.innerHTML = `<div class="results-header"><div><strong>${result.hits.length} résultat${result.hits.length > 1 ? 's' : ''}</strong><small>${result.queryWasVectorized ? 'Requête vectorisée localement · ' : ''}${escapeHtml(state.searchMode)}</small></div><span class="query-time">${(result.tookMicroseconds / 1000).toFixed(2)} ms</span></div><div class="hit-list">${result.hits.map((hit, index) => {
+    target.innerHTML = `<div class="results-header"><div><strong>${result.hits.length} résultat${result.hits.length > 1 ? 's' : ''}</strong><small>${result.queryWasVectorized ? 'Requête vectorisée localement · ' : ''}${escapeHtml(translated(searchModeLabels, state.searchMode))}</small></div><span class="query-time">${(result.tookMicroseconds / 1000).toFixed(2)} ms</span></div><div class="hit-list">${result.hits.map((hit, index) => {
       const metadata = hit.metadata || {};
       const chips = Object.entries(metadata).slice(0, 4).map(([key, value]) => `<span class="meta-chip">${escapeHtml(key)}: ${escapeHtml(shorten(Array.isArray(value) ? value.join(', ') : value, 35))}</span>`).join('');
       return `<article class="hit-card"><div class="hit-top"><span class="hit-id"><b style="color:var(--muted-2);margin-right:7px">#${index + 1}</b>${escapeHtml(hit.id)}</span>${hit.score == null ? '' : `<span class="score-pill">${Number(hit.score).toFixed(5)}</span>`}</div>${hit.text == null ? '' : `<p class="hit-text">${escapeHtml(hit.text)}</p>`}<div class="hit-bottom"><div class="rank-list">${hit.vectorRank ? `<span>vecteur #${hit.vectorRank}</span>` : ''}${hit.textRank ? `<span>BM25 #${hit.textRank}</span>` : ''}</div><div class="meta-chips">${chips}</div></div>${Object.keys(metadata).length || hit.vector ? `<details class="hit-details"><summary>Données complètes</summary><pre class="json-block">${escapeHtml(JSON.stringify({ metadata, vector: hit.vector }, null, 2))}</pre></details>` : ''}</article>`;
@@ -338,13 +368,13 @@
       const source = document.metadata.source_file || 'manuel';
       const format = document.metadata.document_format || '—';
       return `<tr><td class="checkbox-cell"><input type="checkbox" data-document-id="${escapeHtml(document.id)}" aria-label="Sélectionner"></td><td><div class="doc-main"><strong title="${escapeHtml(document.id)}">${escapeHtml(document.id)}</strong><span>${escapeHtml(document.text)}</span><details class="hit-details"><summary>Métadonnées</summary><pre class="json-block">${escapeHtml(JSON.stringify(document.metadata, null, 2))}</pre></details></div></td><td><div class="source-cell"><strong>${escapeHtml(source)}</strong><small>${escapeHtml(format)}</small></div></td><td><span class="dimension-pill">${document.vectorDimension}d</span>${document.vector ? `<details class="hit-details"><summary>voir</summary><pre class="json-block">${escapeHtml(JSON.stringify(document.vector))}</pre></details>` : ''}</td><td>v${document.version}</td><td>${formatDate(document.updatedAt)}</td></tr>`;
-    }).join('') || '<tr><td colspan="6"><div class="empty-state"><h3>Collection vide</h3><p>Ingestérez un document ou ajoutez une mutation manuelle.</p></div></td></tr>';
+    }).join('') || '<tr><td colspan="6"><div class="empty-state"><h3>Collection vide</h3><p>Ingérez un document ou ajoutez une mutation manuelle.</p></div></td></tr>';
   }
 
   async function deleteSelectedDocuments() {
     const ids = [...state.selectedDocuments];
     if (!ids.length || !confirm(`Supprimer définitivement ${ids.length} document(s) de ${state.collection} ?`)) return;
-    showBusy('Suppression', `Application d’un batch atomique de ${ids.length} suppression(s)…`);
+    showBusy('Suppression', `Application d’un lot atomique de ${ids.length} suppression(s)…`);
     try {
       const result = await api(`/collections/${encodeURIComponent(state.collection)}/documents/delete`, { method: 'POST', body: { ids, atomic: true } });
       toast('Documents supprimés', `${result.succeeded} mutation(s) confirmée(s).`);
@@ -366,7 +396,7 @@
       atomic: form.elements.atomic.checked,
       documents: [{ id: form.elements.id.value.trim(), text: form.elements.text.value || null, vector, autoVectorize: form.elements.autoVectorize.checked, metadata }],
     };
-    showBusy('Mutation manuelle', `${body.kind} sur ${state.collection}…`);
+    showBusy('Mutation manuelle', `${translated(mutationLabels, body.kind)} sur ${state.collection}…`);
     try {
       const result = await api(`/collections/${encodeURIComponent(state.collection)}/documents/mutate`, { method: 'POST', body });
       $('#document-dialog').close();
@@ -459,7 +489,7 @@
 
   function renderRuntime(runtime) {
     const banner = $('#runtime-banner');
-    banner.innerHTML = `<span class="status-dot ${runtime.ready ? 'ready' : 'warning'}"></span><div><strong>${runtime.ready ? 'SlimVector est opérationnel' : 'Consensus en préparation'}</strong><small>${escapeHtml(runtime.mode)} · ${runtime.raftGroups.length} groupe(s) Raft · stockage persistant</small></div>`;
+    banner.innerHTML = `<span class="status-dot ${runtime.ready ? 'ready' : 'warning'}"></span><div><strong>${runtime.ready ? 'SlimVector est opérationnel' : 'Consensus en préparation'}</strong><small>${escapeHtml(translated(runtimeModeLabels, runtime.mode))} · ${runtime.raftGroups.length} groupe(s) Raft · stockage persistant</small></div>`;
     $('#op-memory').textContent = formatBytes(runtime.managedMemoryBytes);
     $('#op-open').textContent = formatNumber(runtime.openCollections);
     $('#op-writes').textContent = formatNumber(runtime.writes.totalWrites);
@@ -468,20 +498,20 @@
     $('#op-failures').textContent = `${formatNumber(runtime.operations.searchFailures)} échec`;
     $('#stat-searches').textContent = formatNumber(runtime.operations.searches);
     $('#stat-latency').textContent = runtime.operations.searches ? `${(runtime.operations.searchMicroseconds / runtime.operations.searches / 1000).toFixed(2)} ms moyen` : 'aucune requête';
-    $('#raft-mode').textContent = runtime.mode;
-    $('#raft-groups').innerHTML = runtime.raftGroups.length ? runtime.raftGroups.map(group => `<div class="raft-row"><div class="raft-name"><strong>${escapeHtml(group.groupId)}</strong><small>${escapeHtml(group.localEndpoint)}</small></div><span class="raft-term">term ${group.term} · #${group.lastAppliedIndex}</span><span class="leader-pill">${group.isLeader ? 'leader' : 'follower'}</span></div>`).join('') : '<div class="empty-state"><h3>Coordination directe</h3><p>Le mode single-node n’a pas besoin d’un transport Raft réseau.</p></div>';
+    $('#raft-mode').textContent = translated(runtimeModeLabels, runtime.mode);
+    $('#raft-groups').innerHTML = runtime.raftGroups.length ? runtime.raftGroups.map(group => `<div class="raft-row"><div class="raft-name"><strong>${escapeHtml(group.groupId)}</strong><small>${escapeHtml(group.localEndpoint)}</small></div><span class="raft-term">mandat ${group.term} · #${group.lastAppliedIndex}</span><span class="leader-pill">${group.isLeader ? 'chef' : 'suiveur'}</span></div>`).join('') : '<div class="empty-state"><h3>Coordination directe</h3><p>Le mode nœud unique n’a pas besoin d’un transport Raft réseau.</p></div>';
     const writes = runtime.writes;
     const max = Math.max(1, writes.totalWrites, writes.completedWrites, writes.totalBatchItems);
     $('#write-metrics').innerHTML = [
       ['Écritures terminées', writes.completedWrites, writes.completedWrites / max],
-      ['Éléments batchés', writes.totalBatchItems, writes.totalBatchItems / max],
+      ['Éléments regroupés', writes.totalBatchItems, writes.totalBatchItems / max],
       ['Lots adaptatifs', writes.totalBatches, writes.totalBatches / Math.max(1, writes.totalBatches)],
       ['File courante', writes.queueDepth, Math.min(1, writes.queueDepth / 1000)],
     ].map(([label, value, ratio]) => `<div><div class="metric-bar-head"><span>${label}</span><strong>${formatNumber(value)}</strong></div><div class="bar-track"><span style="--value:${Math.max(2, ratio * 100)}%"></span></div></div>`).join('');
   }
 
   function renderBackups(backups) {
-    $('#backups-body').innerHTML = backups.map(backup => `<tr><td><span class="hit-id" title="${escapeHtml(backup.backupId)}">${escapeHtml(shorten(backup.backupId, 22))}</span></td><td>${formatDate(backup.createdAt)}</td><td>${backup.collectionCount}</td><td>${formatNumber(backup.documentCount)}</td><td>${escapeHtml(backup.parentBackupId ? shorten(backup.parentBackupId, 12) : '—')}</td><td><div class="table-actions"><button class="table-action" data-backup-action="verify" data-backup-id="${escapeHtml(backup.backupId)}">Vérifier</button><button class="table-action" data-backup-action="collection" data-backup-id="${escapeHtml(backup.backupId)}">Restaurer une collection</button><button class="table-action" data-backup-action="full" data-backup-id="${escapeHtml(backup.backupId)}">Restauration complète</button></div></td></tr>`).join('') || '<tr><td colspan="6"><div class="empty-state"><h3>Aucune sauvegarde</h3><p>Créez un premier snapshot logique.</p></div></td></tr>';
+    $('#backups-body').innerHTML = backups.map(backup => `<tr><td><span class="hit-id" title="${escapeHtml(backup.backupId)}">${escapeHtml(shorten(backup.backupId, 22))}</span></td><td>${formatDate(backup.createdAt)}</td><td>${backup.collectionCount}</td><td>${formatNumber(backup.documentCount)}</td><td>${escapeHtml(backup.parentBackupId ? shorten(backup.parentBackupId, 12) : '—')}</td><td><div class="table-actions"><button class="table-action" data-backup-action="verify" data-backup-id="${escapeHtml(backup.backupId)}">Vérifier</button><button class="table-action" data-backup-action="collection" data-backup-id="${escapeHtml(backup.backupId)}">Restaurer une collection</button><button class="table-action" data-backup-action="full" data-backup-id="${escapeHtml(backup.backupId)}">Restauration complète</button></div></td></tr>`).join('') || '<tr><td colspan="6"><div class="empty-state"><h3>Aucune sauvegarde</h3><p>Créez un premier instantané logique.</p></div></td></tr>';
   }
 
   async function createBackup() {
@@ -496,13 +526,13 @@
   async function backupAction(action, id) {
     try {
       if (action === 'verify') {
-        showBusy('Vérification', `Contrôle des checksums de ${shorten(id, 18)}…`);
+        showBusy('Vérification', `Contrôle des sommes de vérification de ${shorten(id, 18)}…`);
         await api(`/backups/${encodeURIComponent(id)}/verify`, { method: 'POST' });
         toast('Sauvegarde valide', id);
       } else if (action === 'collection') {
         const collectionName = prompt('Nom de la collection à restaurer :', state.collection);
         if (!collectionName) return;
-        const restoredName = prompt('Nouveau nom (laisser vide pour conserver le nom) :', `${collectionName}-restored`);
+        const restoredName = prompt('Nouveau nom (laisser vide pour conserver le nom) :', `${collectionName}-restauree`);
         showBusy('Restauration ciblée', collectionName);
         await api(`/backups/${encodeURIComponent(id)}/restore-collection`, { method: 'POST', body: { collectionName, restoredName: restoredName || null, overwrite: false } });
         toast('Collection restaurée', restoredName || collectionName);

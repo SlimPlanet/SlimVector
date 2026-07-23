@@ -63,20 +63,24 @@ public sealed class CollectionSearchIndex : IDisposable
 
             return;
         }
-
         HnswIndex? legacyHnsw = vectorKind == VectorIndexKind.Hnsw && persistedVectorIndex is not null
             ? HnswIndex.Deserialize(persistedVectorIndex, definition, signature)
             : null;
         _vector = legacyHnsw ?? CreateVectorIndex(definition, vectorKind, diskAnnArtifactDirectory);
         _text = new Bm25Index(bm25K1, bm25B, maximumTermsPerDocument);
         _metadata = new MetadataIndex();
+        _text.EnsureCapacity(records.Length);
+        if (_metadataIndexed)
+        {
+            _metadata.EnsureCapacity(records);
+        }
+
         WasVectorIndexRestored = legacyHnsw is not null;
 
         if (!WasVectorIndexRestored && _vector is IBulkVectorIndex bulk)
         {
             bulk.Build(records.Select(static document => (document.Id, document.Vector)).ToArray());
         }
-
         foreach (DocumentRecord document in records)
         {
             if (!WasVectorIndexRestored && _vector is not IBulkVectorIndex)

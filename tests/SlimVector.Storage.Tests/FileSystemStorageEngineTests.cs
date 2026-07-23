@@ -120,6 +120,57 @@ public sealed class FileSystemStorageEngineTests
     }
 
     [Fact]
+    public async Task DocumentCountIsMigratedIntoManifestAndMaintainedFromCachedState()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        CollectionDefinition definition = CollectionDefinition.Create("counted", 2, DistanceMetric.Cosine);
+        string manifestPath = Path.Combine(
+            directory.Path,
+            "collections",
+            definition.Id.ToString("N"),
+            "manifest.json");
+        using (FileSystemStorageEngine storage = CreateStorage(directory.Path))
+        {
+            await storage.InitializeAsync(cancellationToken);
+            await storage.CreateCollectionAsync(definition, cancellationToken);
+            await storage.AppendAsync(
+                definition.Id,
+                [
+                    StorageOperation.Upsert(Document("one", [1, 0])),
+                    StorageOperation.Upsert(Document("two", [0, 1])),
+                ],
+                cancellationToken);
+        }
+
+        JsonObject legacyManifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath, cancellationToken))!.AsObject();
+        legacyManifest.Remove("documentCount");
+        await File.WriteAllTextAsync(manifestPath, legacyManifest.ToJsonString(), cancellationToken);
+
+        using (FileSystemStorageEngine migrated = CreateStorage(directory.Path))
+        {
+            await migrated.InitializeAsync(cancellationToken);
+            Assert.Equal(2, await migrated.CountDocumentsAsync(definition.Id, cancellationToken));
+            await migrated.AppendAsync(
+                definition.Id,
+                [StorageOperation.Upsert(Document("two", [0.5F, 0.5F]))],
+                cancellationToken);
+            Assert.Equal(2, await migrated.CountDocumentsAsync(definition.Id, cancellationToken));
+            await migrated.AppendAsync(
+                definition.Id,
+                [StorageOperation.Delete("one")],
+                cancellationToken);
+            Assert.Equal(1, await migrated.CountDocumentsAsync(definition.Id, cancellationToken));
+        }
+
+        JsonObject persisted = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath, cancellationToken))!.AsObject();
+        Assert.Equal(1, persisted["documentCount"]!.GetValue<long>());
+        using FileSystemStorageEngine restarted = CreateStorage(directory.Path);
+        await restarted.InitializeAsync(cancellationToken);
+        Assert.Equal(1, await restarted.CountDocumentsAsync(definition.Id, cancellationToken));
+    }
+
+    [Fact]
     public async Task NewSegmentsUseMemoryPackAndRemainSmallerThanEquivalentJson()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;

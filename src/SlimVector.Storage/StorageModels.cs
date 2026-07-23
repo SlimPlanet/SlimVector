@@ -24,6 +24,8 @@ internal sealed record CollectionManifest
 
     public long Generation { get; init; }
 
+    public long? DocumentCount { get; init; }
+
     public List<SegmentDescriptor> Segments { get; init; } = [];
 }
 

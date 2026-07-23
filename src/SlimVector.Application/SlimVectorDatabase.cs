@@ -42,6 +42,7 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
     private readonly ILocalRaftGroupManager? _localGroups;
     private readonly IDataNodeQueryClient? _queryClient;
     private readonly ConcurrentDictionary<Guid, Lazy<Task<CollectionRuntime>>> _runtimes = new();
+    private readonly ConcurrentDictionary<Guid, int> _localMutationScopes = new();
     private volatile bool _initialized;
 
     public SlimVectorDatabase(
@@ -189,6 +190,16 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                     $"Existing collection '{name}' does not match the requested dimension and metric.");
             }
 
+            if (existing.Placement is null)
+            {
+                existing = existing with
+                {
+                    Placement = _consensus.CreateInitialPlacement(existing.Id),
+                    UpdatedAt = _timeProvider.GetUtcNow(),
+                };
+                await _consensus.UpsertCollectionAsync(existing, cancellationToken).ConfigureAwait(false);
+            }
+
             return existing;
         }
 
@@ -237,18 +248,47 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
         }
     }
 
-    public ValueTask<BatchMutationResult> MutateAsync(
+    public async ValueTask<BatchMutationResult> MutateAsync(
         string collectionName,
         IReadOnlyList<DocumentMutation> mutations,
         bool atomic,
         string? clientId = null,
-        CancellationToken cancellationToken = default) =>
-        _consensus.Mode == ExecutionMode.Cluster && _queryClient is not null && _localGroups is not null
-            ? MutateDistributedAsync(collectionName, mutations, atomic, clientId, cancellationToken)
-            : ExecuteAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_consensus.Mode == ExecutionMode.Cluster && _queryClient is not null && _localGroups is not null)
+        {
+            return await MutateDistributedAsync(
+                    collectionName,
+                    mutations,
+                    atomic,
+                    clientId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        CollectionDefinition definition = await ResolveRequiredCollectionAsync(
                 collectionName,
-                runtime => runtime.MutateAsync(mutations, atomic, clientId, cancellationToken),
-                cancellationToken);
+                ReadConsistency.Leader,
+                cancellationToken)
+            .ConfigureAwait(false);
+        _localMutationScopes.AddOrUpdate(definition.Id, 1, static (_, count) => checked(count + 1));
+        try
+        {
+            return await ExecuteAsync(
+                    definition.Name,
+                    runtime => runtime.MutateAsync(mutations, atomic, clientId, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _localMutationScopes.AddOrUpdate(definition.Id, 0, static (_, count) => Math.Max(0, count - 1));
+            if (_localMutationScopes.TryGetValue(definition.Id, out int count) && count == 0)
+            {
+                _localMutationScopes.TryRemove(new KeyValuePair<Guid, int>(definition.Id, count));
+            }
+        }
+    }
 
     public async ValueTask<IReadOnlyList<DocumentRecord>> GetDocumentsAsync(
         string collectionName,
@@ -295,6 +335,19 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                 ? ids.Distinct(StringComparer.Ordinal).Where(byId.ContainsKey).Select(id => byId[id])
                 : byId.Values.OrderBy(static document => document.Id, StringComparer.Ordinal);
             return ordered.Skip(offset).Take(limit).Select(static document => document.DeepCopy()).ToArray();
+        }
+
+        if (dataGroupIds.Length == 1)
+        {
+            IReadOnlyDictionary<string, DocumentRecord> stored = _dataGroupStorage is null
+                ? await _storage.LoadDocumentsAsync(definition.Id, cancellationToken).ConfigureAwait(false)
+                : await _dataGroupStorage
+                    .LoadDocumentsAsync(dataGroupIds[0], definition.Id, cancellationToken)
+                    .ConfigureAwait(false);
+            IEnumerable<DocumentRecord> ordered = ids is { Count: > 0 }
+                ? ids.Distinct(StringComparer.Ordinal).Where(stored.ContainsKey).Select(id => stored[id])
+                : stored.Values.OrderBy(static document => document.Id, StringComparer.Ordinal);
+            return ordered.Skip(offset).Take(limit).ToArray();
         }
 
         return await ExecuteAsync(collectionName, runtime => runtime.GetDocumentsAsync(ids, offset, limit), cancellationToken)
@@ -370,6 +423,15 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                 hosted,
                 cancellationToken).AsTask()).ToArray();
             return (await Task.WhenAll(tasks).ConfigureAwait(false)).Sum();
+        }
+
+        if (dataGroupIds.Length == 1)
+        {
+            return _dataGroupStorage is null
+                ? await _storage.CountDocumentsAsync(definition.Id, cancellationToken).ConfigureAwait(false)
+                : await _dataGroupStorage
+                    .CountDocumentsAsync(dataGroupIds[0], definition.Id, cancellationToken)
+                    .ConfigureAwait(false);
         }
 
         return await ExecuteAsync(collectionName, static runtime => runtime.CountAsync(), cancellationToken).ConfigureAwait(false);
@@ -602,8 +664,10 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
             documentCount = documents.Count;
             if (definition.VectorIndex.Kind == VectorIndexKind.Auto)
             {
-                byte[]? manifestData = await _storage
-                    .ReadDerivedDataAsync(definition.Id, SearchIndexManifestDataName, cancellationToken)
+                byte[]? manifestData = await ReadDerivedDataAsync(
+                        definition,
+                        SearchIndexManifestDataName,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 persistedManifest = manifestData is null ? null : IndexGenerationManifestCodec.Deserialize(manifestData);
             }
@@ -612,18 +676,20 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                 ? documentCount >= _vectorIndexOptions.AutoHnswThreshold ? VectorIndexKind.Hnsw : VectorIndexKind.Flat
                 : definition.VectorIndex.Kind);
             persistedVectorIndex = persistedManifest is null
-                ? await _storage.ReadDerivedDataAsync(definition.Id, SearchIndexDerivedDataName, cancellationToken).ConfigureAwait(false)
-                : await _storage.ReadDerivedDataAsync(
-                    definition.Id,
+                ? await ReadDerivedDataAsync(definition, SearchIndexDerivedDataName, cancellationToken).ConfigureAwait(false)
+                : await ReadDerivedDataAsync(
+                    definition,
                     $"search-index-generation-{persistedManifest.ActiveGeneration}",
                     cancellationToken).ConfigureAwait(false);
-            persistedVectorIndex ??= await _storage
-                .ReadDerivedDataAsync(definition.Id, HnswDerivedDataName, cancellationToken)
+            persistedVectorIndex ??= await ReadDerivedDataAsync(
+                    definition,
+                    HnswDerivedDataName,
+                    cancellationToken)
                 .ConfigureAwait(false);
             if (persistedManifest?.PreviousGeneration is { } previousGeneration && persistedManifest.PreviousKind.HasValue)
             {
-                persistedPreviousVectorIndex = await _storage.ReadDerivedDataAsync(
-                    definition.Id,
+                persistedPreviousVectorIndex = await ReadDerivedDataAsync(
+                    definition,
                     $"search-index-generation-{previousGeneration}",
                     cancellationToken).ConfigureAwait(false);
             }
@@ -646,12 +712,20 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                 persistedPreviousVectorIndex,
                 _metrics,
                 _dataGroupStorage);
-            if (_dataGroupStorage is not null)
+            restoredPersistedIndex = runtime.RestoredPersistedIndex;
+            if (_dataGroupStorage is not null && !restoredPersistedIndex)
             {
-                await runtime.EnsureIndexesPersistedAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await runtime.EnsureIndexesPersistedAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    runtime.Dispose();
+                    throw;
+                }
             }
 
-            restoredPersistedIndex = runtime.RestoredPersistedIndex;
             succeeded = true;
             return runtime;
         }
@@ -664,6 +738,36 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
                 succeeded,
                 restoredPersistedIndex);
         }
+    }
+
+    private async ValueTask<byte[]?> ReadDerivedDataAsync(
+        CollectionDefinition definition,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        if (_dataGroupStorage is not null)
+        {
+            string[] routes = _consensus.GetReadRoutes(definition)
+                .Select(static route => route.DataGroupId)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (routes.Length == 1 &&
+                _dataGroupStorage.GetLocalDataGroupIds().Contains(routes[0], StringComparer.Ordinal))
+            {
+                try
+                {
+                    return await _dataGroupStorage
+                        .ReadDerivedDataAsync(routes[0], definition.Id, name, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (DomainException exception) when (exception.Code == ErrorCodes.CollectionNotFound)
+                {
+                    // Legacy single-node stores may only have the catalog-level derived index.
+                }
+            }
+        }
+
+        return await _storage.ReadDerivedDataAsync(definition.Id, name, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask EvictOldestRuntimeAsync(CancellationToken cancellationToken)
@@ -1162,6 +1266,11 @@ public sealed class SlimVectorDatabase : ISlimVectorDatabase, ILocalDataQuerySer
     {
         if (collectionId.HasValue)
         {
+            if (_localMutationScopes.ContainsKey(collectionId.Value))
+            {
+                return;
+            }
+
             if (_runtimes.TryRemove(collectionId.Value, out Lazy<Task<CollectionRuntime>>? removed) &&
                 removed.IsValueCreated && removed.Value.IsCompletedSuccessfully)
             {

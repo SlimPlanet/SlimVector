@@ -15,6 +15,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
     private readonly StorageMetrics _metrics;
     private readonly SemaphoreSlim _catalogLock = new(1, 1);
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _collectionLocks = new();
+    private readonly ConcurrentDictionary<Guid, Dictionary<string, DocumentRecord>> _documentCache = new();
     private CatalogFile _catalog = new();
     private volatile bool _initialized;
 
@@ -212,6 +213,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             }
 
             _collectionLocks.TryRemove(definition.Id, out _);
+            _documentCache.TryRemove(definition.Id, out _);
         }
         finally
         {
@@ -229,22 +231,44 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         try
         {
             EnsureKnownCollection(collectionId);
-            string segmentsPath = GetSegmentsPath(collectionId);
-            Dictionary<string, DocumentRecord> documents = new(StringComparer.Ordinal);
-            List<SegmentDescriptor> descriptors = [];
-            foreach (string file in Directory.EnumerateFiles(segmentsPath, "*.segment").Order(StringComparer.Ordinal))
+            if (!_documentCache.TryGetValue(collectionId, out Dictionary<string, DocumentRecord>? documents))
             {
-                (SegmentPayload payload, SegmentDescriptor descriptor) = await ReadSegmentAsync(file, collectionId, cancellationToken).ConfigureAwait(false);
-                foreach (StorageOperation operation in payload.Operations)
-                {
-                    Apply(documents, operation);
-                }
-
-                descriptors.Add(descriptor);
+                documents = await LoadDocumentsCoreAsync(collectionId, cancellationToken).ConfigureAwait(false);
+                _documentCache[collectionId] = documents;
             }
 
-            await ReconcileManifestAsync(collectionId, descriptors, cancellationToken).ConfigureAwait(false);
-            return documents.ToDictionary(static pair => pair.Key, static pair => pair.Value.DeepCopy(), StringComparer.Ordinal);
+            return CopyDocuments(documents);
+        }
+        finally
+        {
+            collectionLock.Release();
+        }
+    }
+
+    public async ValueTask<long> CountDocumentsAsync(
+        Guid collectionId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        SemaphoreSlim collectionLock = GetCollectionLock(collectionId);
+        await collectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureKnownCollection(collectionId);
+            if (_documentCache.TryGetValue(collectionId, out Dictionary<string, DocumentRecord>? documents))
+            {
+                return documents.Count;
+            }
+
+            CollectionManifest manifest = await ReadManifestAsync(collectionId, cancellationToken).ConfigureAwait(false);
+            if (manifest.DocumentCount.HasValue)
+            {
+                return manifest.DocumentCount.Value;
+            }
+
+            documents = await LoadDocumentsCoreAsync(collectionId, cancellationToken).ConfigureAwait(false);
+            _documentCache[collectionId] = documents;
+            return documents.Count;
         }
         finally
         {
@@ -270,6 +294,10 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         {
             EnsureKnownCollection(collectionId);
             CollectionManifest manifest = await ReadManifestAsync(collectionId, cancellationToken).ConfigureAwait(false);
+            _documentCache.TryGetValue(collectionId, out Dictionary<string, DocumentRecord>? cachedDocuments);
+            long? documentCount = cachedDocuments is null
+                ? null
+                : CalculateDocumentCountAfter(cachedDocuments, operations);
             long sequence = manifest.Segments.Count == 0 ? 1 : checked(manifest.Segments.Max(static segment => segment.Sequence) + 1);
             SegmentPayload payload = new()
             {
@@ -283,9 +311,18 @@ public sealed class FileSystemStorageEngine : IStorageEngine
             CollectionManifest next = manifest with
             {
                 Generation = manifest.Generation + 1,
+                DocumentCount = documentCount,
                 Segments = [.. manifest.Segments, descriptor],
             };
             await WriteManifestAsync(collectionId, next, cancellationToken).ConfigureAwait(false);
+            if (cachedDocuments is not null)
+            {
+                foreach (StorageOperation operation in operations)
+                {
+                    Apply(cachedDocuments, operation, copyDocument: true);
+                }
+            }
+
             if (next.Segments.Count >= _settings.MaximumSegmentsBeforeCompaction)
             {
                 await CompactCoreAsync(collectionId, next, cancellationToken).ConfigureAwait(false);
@@ -323,6 +360,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         }
 
         _collectionLocks.Clear();
+        _documentCache.Clear();
     }
 
     private async ValueTask CompactCoreAsync(
@@ -373,9 +411,11 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         CollectionManifest next = manifest with
         {
             Generation = manifest.Generation + 1,
+            DocumentCount = documents.Count,
             Segments = [descriptor],
         };
         await WriteManifestAsync(collectionId, next, cancellationToken).ConfigureAwait(false);
+        _documentCache[collectionId] = documents;
     }
 
     public async ValueTask<byte[]?> ReadDerivedDataAsync(
@@ -479,7 +519,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         string manifestPath = GetManifestPath(collectionId);
         if (!File.Exists(manifestPath))
         {
-            CollectionManifest manifest = new() { CollectionId = collectionId };
+            CollectionManifest manifest = new() { CollectionId = collectionId, DocumentCount = 0 };
             await WriteManifestAsync(collectionId, manifest, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -513,21 +553,49 @@ public sealed class FileSystemStorageEngine : IStorageEngine
     private async ValueTask ReconcileManifestAsync(
         Guid collectionId,
         List<SegmentDescriptor> descriptors,
+        long documentCount,
         CancellationToken cancellationToken)
     {
         CollectionManifest manifest = await ReadManifestAsync(collectionId, cancellationToken).ConfigureAwait(false);
         bool equal = manifest.Segments.Count == descriptors.Count && manifest.Segments
             .OrderBy(static segment => segment.Sequence)
             .SequenceEqual(descriptors.OrderBy(static segment => segment.Sequence));
-        if (!equal)
+        if (!equal || manifest.DocumentCount != documentCount)
         {
             CollectionManifest repaired = manifest with
             {
                 Generation = manifest.Generation + 1,
+                DocumentCount = documentCount,
                 Segments = descriptors.OrderBy(static segment => segment.Sequence).ToList(),
             };
             await WriteManifestAsync(collectionId, repaired, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async ValueTask<Dictionary<string, DocumentRecord>> LoadDocumentsCoreAsync(
+        Guid collectionId,
+        CancellationToken cancellationToken)
+    {
+        string segmentsPath = GetSegmentsPath(collectionId);
+        Dictionary<string, DocumentRecord> documents = new(StringComparer.Ordinal);
+        List<SegmentDescriptor> descriptors = [];
+        foreach (string file in Directory.EnumerateFiles(segmentsPath, "*.segment").Order(StringComparer.Ordinal))
+        {
+            (SegmentPayload payload, SegmentDescriptor descriptor) = await ReadSegmentAsync(
+                    file,
+                    collectionId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            foreach (StorageOperation operation in payload.Operations)
+            {
+                Apply(documents, operation);
+            }
+
+            descriptors.Add(descriptor);
+        }
+
+        await ReconcileManifestAsync(collectionId, descriptors, documents.Count, cancellationToken).ConfigureAwait(false);
+        return documents;
     }
 
     private async ValueTask<SegmentDescriptor> WriteSegmentAsync(SegmentPayload payload, CancellationToken cancellationToken)
@@ -665,7 +733,47 @@ public sealed class FileSystemStorageEngine : IStorageEngine
         }
     }
 
-    private static void Apply(Dictionary<string, DocumentRecord> documents, StorageOperation operation)
+    private static Dictionary<string, DocumentRecord> CopyDocuments(
+        Dictionary<string, DocumentRecord> documents) =>
+        documents.ToDictionary(
+            static pair => pair.Key,
+            static pair => pair.Value.DeepCopy(),
+            StringComparer.Ordinal);
+
+    private static long CalculateDocumentCountAfter(
+        IReadOnlyDictionary<string, DocumentRecord> documents,
+        IReadOnlyList<StorageOperation> operations)
+    {
+        HashSet<string> live = documents.Keys.ToHashSet(StringComparer.Ordinal);
+        foreach (StorageOperation operation in operations)
+        {
+            switch (operation.Kind)
+            {
+                case DocumentMutationKind.Add:
+                case DocumentMutationKind.Upsert:
+                case DocumentMutationKind.Update:
+                    if (operation.Document is null)
+                    {
+                        throw Corruption($"Persisted operation for '{operation.Id}' has no document.");
+                    }
+
+                    live.Add(operation.Id);
+                    break;
+                case DocumentMutationKind.Delete:
+                    live.Remove(operation.Id);
+                    break;
+                default:
+                    throw Corruption($"Unknown persisted operation '{operation.Kind}'.");
+            }
+        }
+
+        return live.Count;
+    }
+
+    private static void Apply(
+        Dictionary<string, DocumentRecord> documents,
+        StorageOperation operation,
+        bool copyDocument = false)
     {
         switch (operation.Kind)
         {
@@ -677,7 +785,7 @@ public sealed class FileSystemStorageEngine : IStorageEngine
                     throw Corruption($"Persisted operation for '{operation.Id}' has no document.");
                 }
 
-                documents[operation.Id] = operation.Document;
+                documents[operation.Id] = copyDocument ? operation.Document.DeepCopy() : operation.Document;
                 break;
             case DocumentMutationKind.Delete:
                 documents.Remove(operation.Id);

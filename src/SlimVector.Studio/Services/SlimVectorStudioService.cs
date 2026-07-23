@@ -51,7 +51,7 @@ public sealed class SlimVectorStudioService
         IReadOnlyList<CollectionDefinition> collections = await _database.ListCollectionsAsync(cancellationToken).ConfigureAwait(false);
         Task<CollectionSummary>[] summaries = collections.Select(async collection => new CollectionSummary
         {
-            Definition = collection,
+            Definition = StudioCollectionDefinition.FromDomain(collection),
             DocumentCount = await _database.CountDocumentsAsync(collection.Name, cancellationToken).ConfigureAwait(false),
         }).ToArray();
         CollectionSummary[] resolved = await Task.WhenAll(summaries).ConfigureAwait(false);
@@ -105,7 +105,7 @@ public sealed class SlimVectorStudioService
         {
             throw new DocumentIngestionException(
                 "collection_embedding_dimension_mismatch",
-                $"Collection '{collection.Name}' has dimension {collection.Dimension}; local model '{_embeddings.ModelId}' produces {_embeddings.Dimension} dimensions.");
+                $"La collection « {collection.Name} » a une dimension de {collection.Dimension} ; le modèle local « {_embeddings.ModelId} » produit {_embeddings.Dimension} dimensions.");
         }
 
         DocumentSource source = new(command.Content, command.FileName, command.ContentType, command.Length);
@@ -193,7 +193,7 @@ public sealed class SlimVectorStudioService
             {
                 throw new DocumentIngestionException(
                     "collection_embedding_dimension_mismatch",
-                    $"Automatic query vectorization requires a {_embeddings.Dimension}-dimension collection.");
+                    $"La vectorisation automatique des requêtes nécessite une collection de dimension {_embeddings.Dimension}.");
             }
 
             IReadOnlyList<float[]> generated = await _embeddings.GenerateAsync([input.Query], cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -263,7 +263,7 @@ public sealed class SlimVectorStudioService
     {
         if (input.Documents.Length == 0)
         {
-            throw new ArgumentException("At least one document is required.", nameof(input));
+            throw new ArgumentException("Au moins un document est requis.", nameof(input));
         }
 
         CollectionDefinition collection = await _database.GetCollectionAsync(collectionName, cancellationToken).ConfigureAwait(false);
@@ -280,7 +280,7 @@ public sealed class SlimVectorStudioService
                 {
                     throw new DocumentIngestionException(
                         "collection_embedding_dimension_mismatch",
-                        $"Automatic vectorization requires a {_embeddings.Dimension}-dimension collection.");
+                        $"La vectorisation automatique nécessite une collection de dimension {_embeddings.Dimension}.");
                 }
 
                 generatedIndexes.Add(index);
@@ -348,7 +348,7 @@ public sealed class SlimVectorStudioService
     {
         if (!string.Equals(input.Confirm, "RESTORE", StringComparison.Ordinal))
         {
-            throw new ArgumentException("Type RESTORE to confirm a full restore.", nameof(input));
+            throw new ArgumentException("Saisissez RESTORE pour confirmer une restauration complète.", nameof(input));
         }
 
         return _backups.RestoreFullAsync(backupId, cancellationToken);
@@ -405,7 +405,7 @@ public sealed class SlimVectorStudioService
                 DocumentMutationResult? failure = result.Results.FirstOrDefault(static item => !item.Succeeded);
                 throw new DocumentIngestionException(
                     failure?.ErrorCode ?? "document_store_failed",
-                    failure?.ErrorMessage ?? "SlimVector rejected one or more chunks.");
+                    failure?.ErrorMessage ?? "SlimVector a refusé un ou plusieurs fragments.");
             }
         }
 
@@ -450,7 +450,7 @@ public sealed class SlimVectorStudioService
         {
             if (input.Text is null || vector is null)
             {
-                throw new ArgumentException("Add and upsert require text plus a vector or automatic vectorization.");
+                throw new ArgumentException("L’ajout et la création ou le remplacement nécessitent un texte ainsi qu’un vecteur ou une vectorisation automatique.");
             }
 
             return new DocumentMutation

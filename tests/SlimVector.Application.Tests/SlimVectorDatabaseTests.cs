@@ -49,6 +49,32 @@ public sealed class SlimVectorDatabaseTests
     }
 
     [Fact]
+    public async Task PersistentCountDoesNotOpenOrRebuildCollectionRuntime()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        await using (DatabaseFixture first = await DatabaseFixture.CreateAsync(directory.Path, cancellationToken))
+        {
+            await first.Database.CreateCollectionAsync("counted", 2, DistanceMetric.Cosine, cancellationToken: cancellationToken);
+            await first.Database.MutateAsync(
+                "counted",
+                [Add("one", "one", [1, 0], 1), Add("two", "two", [0, 1], 2)],
+                atomic: true,
+                cancellationToken: cancellationToken);
+            Assert.Equal(1, first.Database.OpenCollectionCount);
+        }
+
+        await using DatabaseFixture restarted = await DatabaseFixture.CreateAsync(directory.Path, cancellationToken);
+        Assert.Equal(2, await restarted.Database.CountDocumentsAsync("counted", cancellationToken));
+        Assert.Equal(2, (await restarted.Database.GetDocumentsAsync(
+            "counted",
+            limit: 25,
+            cancellationToken: cancellationToken)).Count);
+        Assert.Equal(0, restarted.Database.OpenCollectionCount);
+        Assert.Equal(0, restarted.Metrics.GetSnapshot().IndexLoads);
+    }
+
+    [Fact]
     public async Task AtomicBatchDoesNotPersistPartialSuccess()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;

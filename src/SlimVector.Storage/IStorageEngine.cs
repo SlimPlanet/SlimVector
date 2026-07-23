@@ -20,6 +20,10 @@ public interface IStorageEngine : IDisposable
         Guid collectionId,
         CancellationToken cancellationToken = default);
 
+    ValueTask<long> CountDocumentsAsync(
+        Guid collectionId,
+        CancellationToken cancellationToken = default);
+
     ValueTask AppendAsync(
         Guid collectionId,
         IReadOnlyList<StorageOperation> operations,

@@ -385,7 +385,8 @@ public sealed class StorageRaftCommandApplier : IRaftCommandApplier, IDisposable
         await _topologyStore.ReplaceAsync(
             RaftCommandCodec.ToDomain(command.Topology),
             cancellationToken).ConfigureAwait(false);
-        StateChanged?.Invoke(null);
+        // Collection definitions carry their own placement and emit collection-scoped changes.
+        // Capacity and health telemetry must not evict every loaded search index.
     }
 
     private async ValueTask EnsureCollectionAsync(

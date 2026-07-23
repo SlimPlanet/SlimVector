@@ -53,6 +53,22 @@ The first vector operation downloads the pinned Apache-2.0 Hugging Face model in
 
 ## Docker
 
+Published multi-architecture images are available from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/slimplanet/slimvector:latest
+docker run --rm -p 8080:8080 -v slimvector-data:/data ghcr.io/slimplanet/slimvector:latest
+```
+
+Every stable GitHub Release links to its immutable image digest and includes a checksummed archive of the released `Dockerfile`, `.dockerignore`, and Compose definitions.
+
+The CI/CD release channel is selected from the last commit message, following the SlimFaas convention:
+
+- `alpha` publishes `<next-version>-alpha.<run>` and updates the `alpha` image tag;
+- `beta` publishes `<next-version>-beta.<run>` and updates the `beta` image tag;
+- `release` on `main` publishes the stable semantic version, updates its major/minor and `latest` tags, and creates the GitHub Release;
+- without one of these keywords, `main` publishes `<next-version>-dev.<run>` and updates `dev`; pull requests are built and tested without being pushed.
+
 ```bash
 docker compose -f compose.single-node.yml up --build
 docker compose -f compose.cluster.yml up --build

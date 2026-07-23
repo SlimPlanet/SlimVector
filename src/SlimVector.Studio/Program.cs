@@ -12,7 +12,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 StudioOptions studioOptions = builder.Configuration.GetSection(StudioOptions.SectionName).Get<StudioOptions>() ?? new StudioOptions();
 if (studioOptions.MaximumUploadBytes < 1024 * 1024)
 {
-    throw new InvalidOperationException("Studio:MaximumUploadBytes must be at least 1 MB.");
+    throw new InvalidOperationException("Studio:MaximumUploadBytes doit être d’au moins 1 Mo.");
 }
 
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = studioOptions.MaximumUploadBytes + 1024 * 1024);
@@ -51,15 +51,15 @@ app.Use(async (context, next) =>
         (int status, string code, string title) = exception switch
         {
             DomainException domain when domain.Code is ErrorCodes.CollectionNotFound or ErrorCodes.DocumentNotFound =>
-                (StatusCodes.Status404NotFound, domain.Code, "Resource not found"),
+                (StatusCodes.Status404NotFound, domain.Code, "Ressource introuvable"),
             DomainException domain when domain.Code is ErrorCodes.CollectionAlreadyExists or ErrorCodes.DocumentAlreadyExists =>
-                (StatusCodes.Status409Conflict, domain.Code, "Resource already exists"),
-            DomainException domain => (StatusCodes.Status400BadRequest, domain.Code, "SlimVector rejected the request"),
-            DocumentIngestionException ingestion => (StatusCodes.Status422UnprocessableEntity, ingestion.Code, "Document ingestion failed"),
-            BadHttpRequestException bad => (bad.StatusCode, "invalid_request", "Invalid request"),
-            JsonException => (StatusCodes.Status400BadRequest, "invalid_json", "Invalid JSON"),
-            ArgumentException => (StatusCodes.Status400BadRequest, "invalid_argument", "Invalid argument"),
-            _ => (StatusCodes.Status500InternalServerError, "studio_error", "SlimVector Studio failed"),
+                (StatusCodes.Status409Conflict, domain.Code, "Ressource déjà existante"),
+            DomainException domain => (StatusCodes.Status400BadRequest, domain.Code, "Requête refusée par SlimVector"),
+            DocumentIngestionException ingestion => (StatusCodes.Status422UnprocessableEntity, ingestion.Code, "Échec de l’ingestion documentaire"),
+            BadHttpRequestException bad => (bad.StatusCode, "invalid_request", "Requête invalide"),
+            JsonException => (StatusCodes.Status400BadRequest, "invalid_json", "JSON invalide"),
+            ArgumentException => (StatusCodes.Status400BadRequest, "invalid_argument", "Argument invalide"),
+            _ => (StatusCodes.Status500InternalServerError, "studio_error", "Échec de SlimVector Studio"),
         };
         context.Response.StatusCode = status;
         await Results.Problem(

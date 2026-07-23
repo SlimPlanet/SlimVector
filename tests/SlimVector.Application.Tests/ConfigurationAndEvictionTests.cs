@@ -88,12 +88,22 @@ public sealed class ConfigurationAndEvictionTests
         await database.InitializeAsync(cancellationToken);
         await database.CreateCollectionAsync("lazy", 2, DistanceMetric.Cosine, cancellationToken: cancellationToken);
         Assert.Equal(0, await database.CountDocumentsAsync("lazy", cancellationToken));
+        Assert.Equal(0, database.OpenCollectionCount);
+        _ = await database.SearchAsync(
+            "lazy",
+            new SearchRequest { Mode = SearchMode.Metadata, Limit = 1 },
+            cancellationToken);
         Assert.Equal(1, database.OpenCollectionCount);
 
         timeProvider.Advance(TimeSpan.FromMinutes(2));
         Assert.Equal(1, await database.EvictInactiveCollectionsAsync(cancellationToken));
         Assert.Equal(0, database.OpenCollectionCount);
         Assert.Equal(0, await database.CountDocumentsAsync("lazy", cancellationToken));
+        Assert.Equal(0, database.OpenCollectionCount);
+        _ = await database.SearchAsync(
+            "lazy",
+            new SearchRequest { Mode = SearchMode.Metadata, Limit = 1 },
+            cancellationToken);
         Assert.Equal(1, database.OpenCollectionCount);
     }
 

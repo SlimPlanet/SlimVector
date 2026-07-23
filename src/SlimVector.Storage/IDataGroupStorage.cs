@@ -27,6 +27,11 @@ public interface IDataGroupStorage : IDisposable
         Guid collectionId,
         CancellationToken cancellationToken = default);
 
+    ValueTask<long> CountDocumentsAsync(
+        string groupId,
+        Guid collectionId,
+        CancellationToken cancellationToken = default);
+
     ValueTask AppendAsync(
         string groupId,
         Guid collectionId,

@@ -11,6 +11,7 @@ public sealed class Bm25Index
     private readonly Dictionary<string, Dictionary<string, int>> _postings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _documentTerms = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _documentLengths = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _canonicalTerms = new(StringComparer.Ordinal);
     private long _totalTerms;
 
     public Bm25Index(double k1 = 1.2, double b = 0.75, int maximumTermsPerDocument = 100_000)
@@ -27,15 +28,40 @@ public sealed class Bm25Index
 
     public int Count => _documentLengths.Count;
 
+    internal void EnsureCapacity(int documentCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(documentCount);
+        _documentTerms.EnsureCapacity(documentCount);
+        _documentLengths.EnsureCapacity(documentCount);
+    }
+
     public void Upsert(string id, string text)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentNullException.ThrowIfNull(text);
-        ValidateText(text);
-        Remove(id);
 
-        Dictionary<string, int> terms = TextTokenizer.CountTerms(text);
-        int length = terms.Values.Sum();
+        Dictionary<string, int> countedTerms = TextTokenizer.CountTerms(text);
+        int length = countedTerms.Values.Sum();
+        if (length > _maximumTermsPerDocument)
+        {
+            throw new DomainException(
+                ErrorCodes.TextTooLarge,
+                $"Document text exceeds the configured limit of {_maximumTermsPerDocument} terms.");
+        }
+
+        Remove(id);
+        Dictionary<string, int> terms = new(countedTerms.Count, StringComparer.Ordinal);
+        foreach ((string term, int frequency) in countedTerms)
+        {
+            if (!_canonicalTerms.TryGetValue(term, out string? canonical))
+            {
+                canonical = term;
+                _canonicalTerms.Add(canonical, canonical);
+            }
+
+            terms.Add(canonical, frequency);
+        }
+
         _documentTerms[id] = terms;
         _documentLengths[id] = length;
         _totalTerms += length;
@@ -68,6 +94,7 @@ public sealed class Bm25Index
             if (posting.Count == 0)
             {
                 _postings.Remove(term);
+                _canonicalTerms.Remove(term);
             }
         }
 
@@ -205,12 +232,21 @@ public sealed class Bm25Index
         }
 
         Bm25Index index = new(snapshot.K1, snapshot.B, snapshot.MaximumTermsPerDocument);
+        index.EnsureCapacity(snapshot.Documents.Length);
         foreach (Bm25DocumentSnapshot document in snapshot.Documents)
         {
-            Dictionary<string, int> terms = document.Terms.ToDictionary(
-                static term => term.Term,
-                static term => term.Frequency,
-                StringComparer.Ordinal);
+            Dictionary<string, int> terms = new(document.Terms.Length, StringComparer.Ordinal);
+            foreach (Bm25TermSnapshot term in document.Terms)
+            {
+                if (!index._canonicalTerms.TryGetValue(term.Term, out string? canonical))
+                {
+                    canonical = term.Term;
+                    index._canonicalTerms.Add(canonical, canonical);
+                }
+
+                terms.Add(canonical, term.Frequency);
+            }
+
             int length = terms.Values.Sum();
             index._documentTerms.Add(document.Id, terms);
             index._documentLengths.Add(document.Id, length);

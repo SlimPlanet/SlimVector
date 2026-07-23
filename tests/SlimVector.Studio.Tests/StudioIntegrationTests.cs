@@ -23,14 +23,40 @@ public sealed class StudioIntegrationTests
             using HttpClient client = factory.CreateClient();
 
             string html = await client.GetStringAsync("/", cancellationToken);
+            string javascript = await client.GetStringAsync("/app.js", cancellationToken);
             using JsonDocument bootstrap = await ReadJsonAsync(client, "/studio/api/bootstrap", cancellationToken);
 
             Assert.Contains("SlimVector Studio", html, StringComparison.Ordinal);
+            Assert.Contains("<html lang=\"fr\"", html, StringComparison.Ordinal);
             Assert.Contains("Extraire, découper, vectoriser", html, StringComparison.Ordinal);
+            Assert.Contains("Laboratoire de requêtes", html, StringComparison.Ordinal);
+            Assert.Contains("Fragments indexés", html, StringComparison.Ordinal);
+            Assert.Contains("Régulation de charge", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("Query lab", html, StringComparison.Ordinal);
+            Assert.Contains("fragments produits", javascript, StringComparison.Ordinal);
+            Assert.Contains("Le mode nœud unique", javascript, StringComparison.Ordinal);
+            Assert.DoesNotContain("chunks produits", javascript, StringComparison.Ordinal);
             JsonElement collection = Assert.Single(bootstrap.RootElement.GetProperty("collections").EnumerateArray());
             Assert.Equal("documents", collection.GetProperty("definition").GetProperty("name").GetString());
             Assert.Equal(384, collection.GetProperty("definition").GetProperty("dimension").GetInt32());
+            Assert.False(collection.GetProperty("definition").TryGetProperty("placement", out _));
             Assert.True(bootstrap.RootElement.GetProperty("model").GetProperty("isReady").GetBoolean());
+            using JsonDocument runtime = await ReadJsonAsync(client, "/studio/api/runtime", cancellationToken);
+            Assert.Equal(0, runtime.RootElement.GetProperty("openCollections").GetInt32());
+            Assert.Equal(0, runtime.RootElement.GetProperty("operations").GetProperty("indexLoads").GetInt64());
+
+            using HttpResponseMessage invalidIngestion = await client.PostAsync(
+                "/studio/api/ingest",
+                null,
+                cancellationToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalidIngestion.StatusCode);
+            using JsonDocument problem = await JsonDocument.ParseAsync(
+                await invalidIngestion.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken);
+            Assert.Equal("Requête invalide", problem.RootElement.GetProperty("title").GetString());
+            Assert.Equal(
+                "Un contenu multipart/form-data est requis.",
+                problem.RootElement.GetProperty("detail").GetString());
         }
         finally
         {
@@ -68,6 +94,11 @@ public sealed class StudioIntegrationTests
                 await ingestion.Content.ReadAsStreamAsync(cancellationToken),
                 cancellationToken: cancellationToken);
             Assert.True(ingestionJson.RootElement[0].GetProperty("storedCount").GetInt32() > 0);
+            using (JsonDocument runtime = await ReadJsonAsync(client, "/studio/api/runtime", cancellationToken))
+            {
+                Assert.Equal(1, runtime.RootElement.GetProperty("openCollections").GetInt32());
+                Assert.Equal(1, runtime.RootElement.GetProperty("operations").GetProperty("indexLoads").GetInt64());
+            }
 
             foreach (string mode in new[] { "vector", "text", "hybrid", "metadata" })
             {

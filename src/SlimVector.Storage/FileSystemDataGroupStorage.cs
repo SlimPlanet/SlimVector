@@ -205,6 +205,22 @@ public sealed class FileSystemDataGroupStorage : IDataGroupStorage
         }
     }
 
+    public async ValueTask<long> CountDocumentsAsync(
+        string groupId,
+        Guid collectionId,
+        CancellationToken cancellationToken = default)
+    {
+        FileSystemStorageEngine group = await GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await group.CountDocumentsAsync(collectionId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DomainException exception) when (exception.Code == ErrorCodes.CollectionNotFound)
+        {
+            return 0;
+        }
+    }
+
     public async ValueTask AppendAsync(
         string groupId,
         Guid collectionId,

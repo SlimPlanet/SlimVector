@@ -79,19 +79,19 @@ public static class StudioEndpoints
     {
         if (!request.HasFormContentType)
         {
-            throw new BadHttpRequestException("Expected multipart/form-data.");
+            throw new BadHttpRequestException("Un contenu multipart/form-data est requis.");
         }
 
         IFormCollection form = await request.ReadFormAsync(cancellationToken).ConfigureAwait(false);
         if (form.Files.Count == 0)
         {
-            throw new BadHttpRequestException("Select at least one document.");
+            throw new BadHttpRequestException("Sélectionnez au moins un document.");
         }
 
         string collection = form["collection"].ToString();
         if (string.IsNullOrWhiteSpace(collection))
         {
-            throw new BadHttpRequestException("A target collection is required.");
+            throw new BadHttpRequestException("Une collection cible est requise.");
         }
 
         ChunkingStrategy strategy = Enum.TryParse(form["strategy"], ignoreCase: true, out ChunkingStrategy parsed)
@@ -113,7 +113,7 @@ public static class StudioEndpoints
             if (file.Length > studioOptions.MaximumUploadBytes)
             {
                 throw new BadHttpRequestException(
-                    $"File '{file.FileName}' exceeds the {studioOptions.MaximumUploadBytes} byte upload limit.",
+                    $"Le fichier « {file.FileName} » dépasse la limite d’envoi de {studioOptions.MaximumUploadBytes} octets.",
                     StatusCodes.Status413PayloadTooLarge);
             }
 
@@ -152,7 +152,7 @@ public static class StudioEndpoints
         using JsonDocument document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
         {
-            throw new JsonException("Metadata must be a JSON object.");
+            throw new JsonException("Les métadonnées doivent être un objet JSON.");
         }
 
         return document.RootElement.EnumerateObject().ToDictionary(

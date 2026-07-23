@@ -3,12 +3,13 @@ using SlimVector.Domain;
 
 namespace SlimVector.Indexing;
 
-public sealed class FlatVectorIndex : IVectorIndex
+public sealed class FlatVectorIndex : IVectorIndex, IBulkVectorIndex
 {
     private readonly int _dimension;
     private readonly DistanceMetric _metric;
     private readonly Dictionary<string, int> _positions = new(StringComparer.Ordinal);
     private readonly List<string?> _ids = [];
+    private readonly Stack<int> _freePositions = new();
     private float[] _vectors = [];
     private int _count;
 
@@ -20,6 +21,38 @@ public sealed class FlatVectorIndex : IVectorIndex
     }
 
     public int Count => _count;
+
+    void IBulkVectorIndex.Build(IReadOnlyList<(string Id, float[] Vector)> vectors)
+    {
+        if (_count != 0 || _ids.Count != 0)
+        {
+            throw new InvalidOperationException("A flat index can only be bulk-built while empty.");
+        }
+
+        _ids.Capacity = Math.Max(_ids.Capacity, vectors.Count);
+        _vectors = new float[checked(vectors.Count * _dimension)];
+        for (int position = 0; position < vectors.Count; position++)
+        {
+            (string id, float[] vector) = vectors[position];
+            DomainValidation.ValidateDocumentId(id);
+            if (vector.Length != _dimension)
+            {
+                throw new DomainException(
+                    ErrorCodes.DimensionMismatch,
+                    $"Expected a vector with dimension {_dimension}, but received {vector.Length} values.");
+            }
+
+            if (!_positions.TryAdd(id, position))
+            {
+                throw new DomainException(ErrorCodes.DocumentAlreadyExists, $"Document '{id}' already exists.");
+            }
+
+            _ids.Add(id);
+            vector.CopyTo(_vectors.AsSpan(position * _dimension, _dimension));
+        }
+
+        _count = vectors.Count;
+    }
 
     public void Upsert(string id, ReadOnlySpan<float> vector)
     {
@@ -53,6 +86,7 @@ public sealed class FlatVectorIndex : IVectorIndex
         }
 
         _ids[position] = null;
+        _freePositions.Push(position);
         _vectors.AsSpan(position * _dimension, _dimension).Clear();
         _count--;
         return true;
@@ -137,22 +171,18 @@ public sealed class FlatVectorIndex : IVectorIndex
         }
 
         FlatVectorIndex index = new(snapshot.Dimension, snapshot.Metric);
-        foreach (FlatVectorEntry entry in snapshot.Entries)
-        {
-            index.Upsert(entry.Id, entry.Vector);
-        }
+        ((IBulkVectorIndex)index).Build(snapshot.Entries
+            .Select(static entry => (entry.Id, entry.Vector))
+            .ToArray());
 
         return index;
     }
 
     private int FindFreePosition()
     {
-        for (int index = 0; index < _ids.Count; index++)
+        if (_freePositions.TryPop(out int position))
         {
-            if (_ids[index] is null)
-            {
-                return index;
-            }
+            return position;
         }
 
         _ids.Add(null);

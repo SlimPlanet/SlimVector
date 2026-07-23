@@ -27,5 +27,9 @@ public sealed class Bm25IndexTests
 
         Assert.Equal(ErrorCodes.TextTooLarge, exception.Code);
         Assert.Equal(0, index.Count);
+
+        index.Upsert("one", "one two");
+        _ = Assert.Throws<DomainException>(() => index.Upsert("one", "replacement has three terms"));
+        Assert.Equal("one", Assert.Single(index.Search("one", 1)).Id);
     }
 }

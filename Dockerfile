@@ -2,13 +2,17 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY . .
-RUN dotnet restore src/SlimVector.Api/SlimVector.Api.csproj -r linux-x64
-RUN dotnet publish src/SlimVector.Api/SlimVector.Api.csproj \
-    -c Release \
-    -r linux-x64 \
-    --self-contained true \
-    --no-restore \
-    -o /app
+ARG TARGETARCH
+RUN arch="$TARGETARCH"; \
+    if [ "$arch" = "amd64" ]; then arch="x64"; fi; \
+    rid="linux-$arch"; \
+    dotnet restore src/SlimVector.Api/SlimVector.Api.csproj -r "$rid"; \
+    dotnet publish src/SlimVector.Api/SlimVector.Api.csproj \
+        -c Release \
+        -r "$rid" \
+        --self-contained true \
+        --no-restore \
+        -o /app
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled-extra AS final
 WORKDIR /app

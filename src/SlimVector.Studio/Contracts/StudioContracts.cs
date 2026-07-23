@@ -11,9 +11,40 @@ namespace SlimVector.Studio.Contracts;
 
 public sealed record CollectionSummary
 {
-    public required CollectionDefinition Definition { get; init; }
+    public required StudioCollectionDefinition Definition { get; init; }
 
     public required long DocumentCount { get; init; }
+}
+
+public sealed record StudioCollectionDefinition
+{
+    public required Guid Id { get; init; }
+
+    public required string Name { get; init; }
+
+    public required int Dimension { get; init; }
+
+    public required DistanceMetric Metric { get; init; }
+
+    public required VectorIndexConfiguration VectorIndex { get; init; }
+
+    public required bool MetadataIndexed { get; init; }
+
+    public required DateTimeOffset CreatedAt { get; init; }
+
+    public required DateTimeOffset UpdatedAt { get; init; }
+
+    public static StudioCollectionDefinition FromDomain(CollectionDefinition definition) => new()
+    {
+        Id = definition.Id,
+        Name = definition.Name,
+        Dimension = definition.Dimension,
+        Metric = definition.Metric,
+        VectorIndex = definition.VectorIndex,
+        MetadataIndexed = definition.MetadataIndexed,
+        CreatedAt = definition.CreatedAt,
+        UpdatedAt = definition.UpdatedAt,
+    };
 }
 
 public sealed record StudioBootstrapResponse

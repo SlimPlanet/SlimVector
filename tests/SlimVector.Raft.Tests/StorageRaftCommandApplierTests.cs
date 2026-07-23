@@ -112,6 +112,31 @@ public sealed class StorageRaftCommandApplierTests
         Assert.Equal(ErrorCodes.RoutingEpochMismatch, stale.Code);
     }
 
+    [Fact]
+    public async Task TopologyTelemetryChangesDoNotInvalidateCollectionState()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        StorageSettings settings = new() { Path = directory.Path, FlushToDisk = false };
+        using FileSystemStorageEngine storage = new(settings);
+        using FileSystemClusterTopologyStore topology = new(settings);
+        await storage.InitializeAsync(cancellationToken);
+        await topology.InitializeAsync(cancellationToken);
+        using StorageRaftCommandApplier applier = new(storage, ["data-0"], topologyStore: topology);
+        int stateChanges = 0;
+        applier.StateChanged += _ => stateChanges++;
+
+        await applier.ApplyAsync(
+            RaftCommandCodec.TopologyReplace(
+                Guid.NewGuid(),
+                MultiRaftNode.CatalogGroupId,
+                new ClusterTopology { Epoch = 1 }),
+            cancellationToken);
+
+        Assert.Equal(0, stateChanges);
+        Assert.Equal(1, (await topology.GetAsync(cancellationToken)).Epoch);
+    }
+
     private static FileSystemStorageEngine Storage(string path) => new(new StorageSettings
     {
         Path = path,

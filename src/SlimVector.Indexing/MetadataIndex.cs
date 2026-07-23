@@ -13,6 +13,20 @@ public sealed class MetadataIndex
 
     public int Count => _allIds.Count;
 
+    internal void EnsureCapacity(IReadOnlyCollection<DocumentRecord> documents)
+    {
+        ArgumentNullException.ThrowIfNull(documents);
+        _allIds.EnsureCapacity(documents.Count);
+        _documents.EnsureCapacity(documents.Count);
+        int fields = 0;
+        foreach (DocumentRecord document in documents)
+        {
+            fields = checked(fields + document.Metadata.Sum(static field => ScalarCount(field.Value)));
+        }
+
+        _equality.EnsureCapacity(fields);
+    }
+
     public void Upsert(string id, IReadOnlyDictionary<string, MetadataValue> metadata)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
@@ -292,6 +306,15 @@ public sealed class MetadataIndex
                 return [value];
         }
     }
+
+    private static int ScalarCount(MetadataValue value) => value.Kind switch
+    {
+        MetadataValueKind.TextArray => value.StringArrayValue!.Length,
+        MetadataValueKind.BooleanArray => value.BooleanArrayValue!.Length,
+        MetadataValueKind.IntegralArray => value.IntegerArrayValue!.Length,
+        MetadataValueKind.NumberArray => value.NumberArrayValue!.Length,
+        _ => 1,
+    };
 
     private static bool TryGetOrderedValue(MetadataValue value, out double ordered)
     {
