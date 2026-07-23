@@ -1,0 +1,167 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slimvector-settings
+  namespace: slimvector-eu-west
+data:
+  ASPNETCORE_URLS: "http://+:8080"
+  Storage__Path: "/data"
+  Storage__FlushToDisk: "true"
+  Raft__Mode: "Cluster"
+  Raft__PublicApiEndpoint: "http://127.0.0.1:8090"
+  Raft__DataGroupCount: "2"
+  Raft__DataPortRangeStart: "3263"
+  Raft__DataPortRangeCount: "16"
+  Raft__CapacityBytes: "5368709120"
+  Raft__ElectionTimeout: "00:00:03"
+  Raft__HeartbeatInterval: "00:00:00.500"
+  ClusterMembership__Enabled: "true"
+  DataPlacement__ReplicationFactor: "3"
+  DataPlacement__MinimumGroupReplicasPerNode: "1"
+  Rebalancing__Enabled: "true"
+  Rebalancing__ManualApproval: "true"
+  Api__AdminEndpointsEnabled: "true"
+  GeoReplication__Enabled: "true"
+  GeoReplication__Mode: "Asynchronous"
+  GeoReplication__AcceptIncoming: "false"
+  GeoReplication__ReadOnlySecondary: "false"
+  GeoReplication__StatePath: "/data/geo-replication"
+  Observability__ServiceName: "SlimVector-eu-west"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: slimvector
+  namespace: slimvector-eu-west
+  labels:
+    app.kubernetes.io/name: slimvector
+    app.kubernetes.io/part-of: slimvector
+    slimvector.dev/region: eu-west
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slimvector
+      slimvector.dev/region: eu-west
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slimvector
+        app.kubernetes.io/part-of: slimvector
+        slimvector.dev/region: eu-west
+    spec:
+      nodeSelector:
+        slimvector.dev/worker: "true"
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        fsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: slimvector
+          image: slimvector:kube-local
+          imagePullPolicy: Never
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          envFrom:
+            - configMapRef:
+                name: slimvector-settings
+            - configMapRef:
+                name: slimvector-members
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: Raft__NodeId
+              value: "$(HOST_IP)"
+            - name: Raft__PublicEndpoint
+              value: "http://$(HOST_IP):3262"
+            - name: Raft__InternalEndpoint
+              value: "http://$(HOST_IP):8080"
+            - name: Raft__Zone
+              value: "$(HOST_IP)"
+            - name: GeoReplication__OriginId
+              value: "eu-west-$(HOST_IP)"
+            - name: Api__AdminApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: slimvector-secrets
+                  key: admin-api-key
+            - name: GeoReplication__SharedSecret
+              valueFrom:
+                secretKeyRef:
+                  name: slimvector-secrets
+                  key: geo-shared-secret
+            - name: TMPDIR
+              value: "/tmp"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: raft-catalog
+              containerPort: 3262
+              protocol: TCP
+            - name: raft-data-0
+              containerPort: 3263
+              protocol: TCP
+            - name: raft-data-1
+              containerPort: 3264
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            failureThreshold: 60
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/lib/slimvector/eu-west
+            type: Directory
+        - name: temporary
+          emptyDir:
+            sizeLimit: 128Mi

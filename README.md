@@ -149,6 +149,18 @@ docker compose -f compose.geo.yml up --build
 
 The cluster publishes nodes on ports 8081–8083. The simulated geographic primary and read-only secondary are published on 8090 and 8091.
 
+For a local Kubernetes topology backed by Podman, including two regional
+namespaces and three RF3/Raft members in each region:
+
+```bash
+podman machine start
+./deploy/kind-podman/up.sh
+./deploy/kind-podman/smoke-test.sh
+```
+
+See the [Kind + Podman deployment guide](deploy/kind-podman/README.md) for the
+topology, resource requirements, exposed member ports, and cleanup command.
+
 ## Typed .NET client
 
 ```csharp

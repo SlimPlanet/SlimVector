@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slimvector-eu-west
+  labels:
+    app.kubernetes.io/part-of: slimvector
+    slimvector.dev/region: eu-west
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slimvector-eu-central
+  labels:
+    app.kubernetes.io/part-of: slimvector
+    slimvector.dev/region: eu-central
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slimvector-api
+  namespace: slimvector-eu-west
+  labels:
+    app.kubernetes.io/name: slimvector
+    slimvector.dev/region: eu-west
+spec:
+  selector:
+    app.kubernetes.io/name: slimvector
+    slimvector.dev/region: eu-west
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slimvector-api
+  namespace: slimvector-eu-central
+  labels:
+    app.kubernetes.io/name: slimvector
+    slimvector.dev/region: eu-central
+spec:
+  selector:
+    app.kubernetes.io/name: slimvector
+    slimvector.dev/region: eu-central
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
