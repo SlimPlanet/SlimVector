@@ -1,9 +1,11 @@
 **/bin
 **/obj
-**/data
-**/backups
-**/model
-**/models
+/data
+/backups
+/src/SlimVector.Studio/data
+/src/SlimVector.Studio/backups
+/src/SlimVector.Studio/model
+/src/SlimVector.Studio/models
 **/TestResults
 artifacts
 BenchmarkDotNet.Artifacts

@@ -2,6 +2,8 @@
 **/obj/
 artifacts/
 BenchmarkDotNet.Artifacts/
-data/
-backups/
+/data/
+/backups/
+/src/SlimVector.Studio/data/
+/src/SlimVector.Studio/backups/
 .DS_Store
