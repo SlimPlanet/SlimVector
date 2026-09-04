@@ -168,6 +168,21 @@ public sealed class RaftClusterTests
         Assert.All(groupIds, groupId => Assert.True(node.GetGroup(groupId).IsLeader));
     }
 
+    [Fact]
+    public async Task MultiRaftDisposalIsIdempotent()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        cancellationToken.ThrowIfCancellationRequested();
+        using TemporaryDirectory directory = new();
+        IPEndPoint endpoint = AllocateLoopbackEndpoints(1)[0];
+        MultiRaftNode node = new(
+            [Options(MultiRaftNode.CatalogGroupId, endpoint, [endpoint], directory.Path, 0)],
+            _ => new RecordingCommandApplier());
+
+        await node.DisposeAsync();
+        await node.DisposeAsync();
+    }
+
     [Fact(Timeout = 45_000)]
     public async Task MultiRaftStartsAndRemovesADataGroupWhileRunning()
     {

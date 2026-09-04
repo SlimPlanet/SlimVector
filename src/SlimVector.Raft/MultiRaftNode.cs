@@ -10,6 +10,8 @@ public sealed class MultiRaftNode : IAsyncDisposable
     private readonly ConcurrentDictionary<string, RaftGroupNode> _groups = new(StringComparer.Ordinal);
     private readonly Func<string, IRaftCommandApplier> _applierFactory;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private readonly object _disposeLock = new();
+    private Task? _disposeTask;
     private volatile bool _started;
 
     public MultiRaftNode(
@@ -226,7 +228,15 @@ public sealed class MultiRaftNode : IAsyncDisposable
         .Select(static group => new ClusterMembershipStatus(group.GroupId, group.GetMemberStatuses(), null, null))
         .ToArray();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeLock)
+        {
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
     {
         await _lifecycleGate.WaitAsync().ConfigureAwait(false);
         try

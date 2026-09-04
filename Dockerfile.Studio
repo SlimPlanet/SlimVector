@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1.7
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.300 AS build
 WORKDIR /src
 COPY . .
 ARG TARGETARCH
-RUN arch="$TARGETARCH"; \
+RUN set -eu; \
+    arch="$TARGETARCH"; \
     if [ "$arch" = "amd64" ]; then arch="x64"; fi; \
     rid="linux-$arch"; \
     dotnet restore src/SlimVector.Studio/SlimVector.Studio.csproj -r "$rid"; \

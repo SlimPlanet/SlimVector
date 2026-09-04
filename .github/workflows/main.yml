@@ -43,7 +43,7 @@ jobs:
         run: dotnet build SlimVector.slnx -c Release --no-restore
 
       - name: Run tests
-        run: dotnet test SlimVector.slnx -c Release --no-build --verbosity normal
+        run: dotnet test --solution SlimVector.slnx -c Release --no-build --verbosity normal
 
   version:
     name: Compute release channel and version
