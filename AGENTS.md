@@ -72,11 +72,11 @@ et les performances priment sur la commodité d’une modification locale.
 Exemples :
 
 ```bash
-dotnet test tests/SlimVector.Studio.Tests/SlimVector.Studio.Tests.csproj \
+dotnet test --project tests/SlimVector.Studio.Tests/SlimVector.Studio.Tests.csproj \
   --no-restore --filter "FullyQualifiedName~StudioIntegrationTests"
 
 dotnet build SlimVector.slnx --no-restore
-dotnet test SlimVector.slnx --no-restore --no-build
+dotnet test --solution SlimVector.slnx --no-restore --no-build
 ```
 
 ## Benchmarks : toujours mesurer
@@ -148,7 +148,7 @@ Avant de conclure :
 2. Les tests ciblés passent.
 3. Le benchmark pertinent a été rejoué et ses résultats ont été examinés.
 4. `dotnet build SlimVector.slnx --no-restore` passe sans avertissement.
-5. `dotnet test SlimVector.slnx --no-restore --no-build` passe.
+5. `dotnet test --solution SlimVector.slnx --no-restore --no-build` passe.
 6. `git diff --check` ne signale aucune erreur.
 7. Aucun serveur, processus, fichier temporaire ou artefact de test n’est laissé.
 8. Le compte rendu cite les fichiers modifiés, les tests exécutés, les benchmarks

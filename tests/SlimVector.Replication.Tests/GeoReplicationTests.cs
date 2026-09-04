@@ -71,7 +71,10 @@ public sealed class GeoReplicationTests
             await restarted.StartAsync(cancellationToken);
             CollectionDefinition updated = collection with { UpdatedAt = collection.UpdatedAt.AddMinutes(1) };
             await restarted.PublishAsync(GeoReplicationEventFactory.CollectionUpsert(updated), cancellationToken);
-            await WaitUntilAsync(() => receiver.GetMetrics().ReceivedEvents == 3, cancellationToken);
+            await WaitUntilAsync(
+                () => receiver.GetMetrics().ReceivedEvents == 3 &&
+                    restarted.GetMetrics() is { PendingEvents: 0, SentEvents: 1 },
+                cancellationToken);
             Assert.Equal(1, restarted.GetMetrics().SentEvents);
         }
     }

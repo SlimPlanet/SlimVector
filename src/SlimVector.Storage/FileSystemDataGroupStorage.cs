@@ -257,10 +257,36 @@ public sealed class FileSystemDataGroupStorage : IDataGroupStorage
         EnsureInitialized();
         ValidateGroupId(groupId);
         string path = GetGroupPath(groupId);
-        return !Directory.Exists(path)
-            ? 0
-            : Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
-                .Sum(static file => new FileInfo(file).Length);
+        if (!Directory.Exists(path))
+        {
+            return 0;
+        }
+
+        long allocatedBytes = 0;
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    allocatedBytes = checked(allocatedBytes + new FileInfo(file).Length);
+                }
+                catch (FileNotFoundException)
+                {
+                    // Atomic writes and compaction can move a file after it was enumerated.
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    // A nested directory can be moved while this point-in-time estimate is collected.
+                }
+            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // The data group can be removed after the initial existence check.
+        }
+
+        return allocatedBytes;
     }
 
     public void Dispose()

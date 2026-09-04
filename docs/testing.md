@@ -7,7 +7,7 @@ Run deterministic quality gates from the repository root:
 ```bash
 dotnet format SlimVector.slnx --verify-no-changes
 dotnet build SlimVector.slnx -c Release
-dotnet test SlimVector.slnx -c Release
+dotnet test --solution SlimVector.slnx -c Release
 ```
 
 The test projects cover domain validation; SIMD Flat, HNSW, IVF-Flat, IVF-PQ, scalar quantization and SSD DiskANN persistence/recall/mutation/rollback; Auto selection, online migration, failed-candidate isolation and restart-safe rollback; BM25, metadata and hybrid fusion; immutable storage/crash reconciliation/compaction; CRUD, eviction, batching, backpressure and reserved/fair token buckets; backup/S3/restore; actual TCP Raft election/failover/snapshot/partition/multi-group plus fourth-member warm-up, restart and removal; geographic outage/restart/divergence; and HTTP/client/admin/429/redirect behavior.

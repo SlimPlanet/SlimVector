@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1.7
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.300 AS build
 WORKDIR /src
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang llvm zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
 ARG TARGETARCH
-RUN arch="$TARGETARCH"; \
+RUN set -eu; \
+    arch="$TARGETARCH"; \
     if [ "$arch" = "amd64" ]; then arch="x64"; fi; \
     rid="linux-$arch"; \
     dotnet restore src/SlimVector.Api/SlimVector.Api.csproj -r "$rid"; \

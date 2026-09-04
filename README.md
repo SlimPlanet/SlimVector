@@ -189,7 +189,7 @@ JSON is the default public wire format. For vector-heavy client traffic, constru
 ```bash
 dotnet format SlimVector.slnx --verify-no-changes
 dotnet build SlimVector.slnx -c Release
-dotnet test SlimVector.slnx -c Release
+dotnet test --solution SlimVector.slnx -c Release
 dotnet publish src/SlimVector.Api/SlimVector.Api.csproj -c Release -r linux-x64 --self-contained true
 ```
 

@@ -65,6 +65,50 @@ public sealed class FileSystemStorageEngineTests
     }
 
     [Fact]
+    public async Task DistributedStorageReportsAllocatedBytesDuringAtomicFileReplacement()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using TemporaryDirectory directory = new();
+        using FileSystemDataGroupStorage groups = new(new StorageSettings { Path = directory.Path });
+        await groups.InitializeAsync(cancellationToken);
+        await groups.EnsureDataGroupAsync("data-0", cancellationToken);
+
+        string groupPath = Path.Combine(directory.Path, "data-groups", "data-0");
+        string target = Path.Combine(groupPath, "capacity-race.bin");
+        byte[] contents = new byte[4_096];
+        await File.WriteAllBytesAsync(target, contents, cancellationToken);
+        TaskCompletionSource start = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int observations = 0;
+
+        Task writer = Task.Run(
+            async () =>
+            {
+                await start.Task.WaitAsync(cancellationToken);
+                for (int iteration = 0; iteration < 2_000; iteration++)
+                {
+                    string temporary = $"{target}.{iteration}.tmp";
+                    await File.WriteAllBytesAsync(temporary, contents, cancellationToken);
+                    File.Move(temporary, target, overwrite: true);
+                }
+            },
+            cancellationToken);
+        Task reader = Task.Run(
+            () =>
+            {
+                start.SetResult();
+                while (!writer.IsCompleted)
+                {
+                    Assert.True(groups.GetAllocatedBytes("data-0") >= contents.Length);
+                    observations++;
+                }
+            },
+            cancellationToken);
+
+        await Task.WhenAll(writer, reader);
+        Assert.True(observations > 0);
+    }
+
+    [Fact]
     public async Task LogicalIoMetricsAreMonotonicAndRecordDurableFlushes()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
